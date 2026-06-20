@@ -3,11 +3,12 @@
 
 	/** @type {HTMLDivElement} */
 	let container;
+	/** @type {HTMLVideoElement} */
+	let cameraEl;
 	/** @type {import('phaser').Game | undefined} */
 	let game;
 
 	onMount(() => {
-		// Phaser touches `window`, so import it only in the browser.
 		let destroyed = false;
 		import('$lib/game/SpaceInvaders.js').then(({ startGame }) => {
 			if (destroyed) return;
@@ -27,6 +28,12 @@
 
 <div class="game" bind:this={container}></div>
 
+<!-- Reserved area for a camera feed (wire up later). -->
+<div class="camera-cutoff">
+	<video class="camera-video" bind:this={cameraEl} autoplay muted playsinline></video>
+	<span class="camera-label">Camera</span>
+</div>
+
 <p class="hint">↑ ↓ move &nbsp;·&nbsp; Space shoot &nbsp;·&nbsp; R restart</p>
 <a href="/" class="back">← Home</a>
 
@@ -43,6 +50,36 @@
 		inset: 0;
 		width: 100vw;
 		height: 100vh;
+	}
+
+	.camera-cutoff {
+		position: fixed;
+		top: 16px;
+		left: 16px;
+		width: 240px;
+		height: 180px;
+		border: 2px solid #18181b;
+		border-radius: 6px;
+		background: #e4e4e7;
+		overflow: hidden;
+		z-index: 10;
+	}
+
+	.camera-video {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+		transform: scaleX(-1); /* mirror like a selfie cam */
+	}
+
+	.camera-label {
+		position: absolute;
+		bottom: 6px;
+		left: 8px;
+		font-family: monospace;
+		font-size: 12px;
+		color: #52525b;
+		pointer-events: none;
 	}
 
 	.hint {
