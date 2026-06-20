@@ -5,9 +5,9 @@
 </svelte:head>
 
 <div class="page">
-	<h1>Home</h1>
+	<h1>Space Invaders</h1>
 	<div class="buttons">
-		<a href="/game" class="btn">Game</a>
+		<a href="/game" class="btn">Play</a>
 		<a href="https://github.com/niiccoo2/nexus-project" target="_blank" rel="noopener noreferrer" class="btn">Source Code</a>
 	</div>
 
