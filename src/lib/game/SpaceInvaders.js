@@ -43,9 +43,6 @@ class MainScene extends Phaser.Scene {
 
 	preload() {
 		this.load.image('heart', heartUrl);
-	}
-
-	preload() {
 		this.load.image('player', whiteShipUrl);
 		this.load.image('invader', redShipUrl);
 	}
@@ -144,8 +141,9 @@ class MainScene extends Phaser.Scene {
 				.setDisplaySize(size, size);
 			this.hearts.push(heart);
 		}
-		this.dashLabel?.setY(gameSize.height - 36);
-		this.timeStopLabel?.setY(gameSize.height - 36);
+		const { height } = this.scale;
+		this.dashLabel?.setY(height - 36);
+		this.timeStopLabel?.setY(height - 36);
 	}
 
 	spawnInvaders() {
