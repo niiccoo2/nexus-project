@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import heartUrl from '../../assets/sprites/heart.png';
 
 // Light-mode palette
 const COLORS = {
@@ -41,10 +42,16 @@ function createTextures(scene) {
 class MainScene extends Phaser.Scene {
 	constructor() {
 		super('main');
+		/** @type {Phaser.GameObjects.Image[]} */
+		this.hearts = [];
+	}
+
+	preload() {
+		this.load.image('heart', heartUrl);
 	}
 
 	create() {
-		const { width, height } = this.scale;
+		const { height } = this.scale;
 
 		this.score = 0;
 		this.lives = 3;
@@ -81,13 +88,7 @@ class MainScene extends Phaser.Scene {
 			fontSize: '22px',
 			color: COLORS.text
 		});
-		this.livesText = this.add
-			.text(width - 16, 12, 'Lives: 3', {
-				fontFamily: 'monospace',
-				fontSize: '22px',
-				color: COLORS.text
-			})
-			.setOrigin(1, 0);
+		this.renderLives();
 
 		// Collisions
 		this.physics.add.overlap(this.playerBullets, this.invaders, this.hitInvader, undefined, this);
@@ -105,9 +106,27 @@ class MainScene extends Phaser.Scene {
 		this.scale.on('resize', this.handleResize, this);
 	}
 
-	handleResize(gameSize) {
-		if (!this.livesText) return;
-		this.livesText.setX(gameSize.width - 16);
+	handleResize() {
+		this.renderLives();
+	}
+
+	// Draw one heart icon per remaining life, anchored to the top-right.
+	renderLives() {
+		this.hearts.forEach((h) => h.destroy());
+		this.hearts = [];
+
+		const size = 28;
+		const gap = 6;
+		const margin = 16;
+		const { width } = this.scale;
+
+		for (let i = 0; i < this.lives; i++) {
+			const heart = this.add
+				.image(width - margin - i * (size + gap), margin, 'heart')
+				.setOrigin(1, 0)
+				.setDisplaySize(size, size);
+			this.hearts.push(heart);
+		}
 	}
 
 	spawnInvaders() {
@@ -158,7 +177,7 @@ class MainScene extends Phaser.Scene {
 	hitPlayer(player, bullet) {
 		bullet.destroy();
 		this.lives -= 1;
-		this.livesText.setText('Lives: ' + this.lives);
+		this.renderLives();
 		this.cameras.main.flash(150, 220, 38, 38);
 		if (this.lives <= 0) {
 			this.gameOver();
