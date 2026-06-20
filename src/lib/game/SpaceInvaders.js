@@ -53,6 +53,7 @@ class MainScene extends Phaser.Scene {
 		this.score = 0;
 		this.lives = 3;
 		this.isGameOver = false;
+		this.invulnerable = false;
 
 		// Dash state
 		this.isDashing = false;
@@ -108,7 +109,7 @@ class MainScene extends Phaser.Scene {
 
 		// Collisions
 		this.physics.add.overlap(this.playerBullets, this.invaders, this.hitInvader, undefined, this);
-		this.physics.add.overlap(this.invaderBullets, this.player, this.hitPlayer, undefined, this);
+		this.physics.add.overlap(this.player, this.invaderBullets, this.hitPlayer, undefined, this);
 
 		this.fireTimer = this.time.addEvent({
 			delay: 800,
@@ -252,16 +253,27 @@ class MainScene extends Phaser.Scene {
 		}
 	}
 
-	hitPlayer(bullet, player) {
-		if (this.isDashing) return; // invincible during dash
-		bullet.destroy();
+	// Note: with overlap(sprite, group, ...) Phaser passes the sprite first, then the group member.
+	/**
+	 * @param {any} _player
+	 * @param {any} bullet
+	 */
+	hitPlayer(_player, bullet) {
+		if (!bullet || !bullet.active || this.isGameOver) return;
+		bullet.destroy(); // consume the bullet so it can't re-trigger next frame
+		if (this.isDashing || this.invulnerable) return; // i-frames: one bullet costs at most one life
 		this.lives -= 1;
 		this.renderLives();
-		this.cameras.main.shake(200, 0.014);
+		this.cameras.main.shake(200, 0.01);
 		this.cameras.main.flash(120, 220, 38, 38);
 		if (this.lives <= 0) {
 			this.gameOver();
+			return;
 		}
+		this.invulnerable = true;
+		this.time.delayedCall(900, () => {
+			this.invulnerable = false;
+		});
 	}
 
 	endText(message, color) {
