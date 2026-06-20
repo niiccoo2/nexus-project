@@ -25,45 +25,41 @@
 	<title>Space Invaders</title>
 </svelte:head>
 
-<div class="page">
-	<h1>Space Invaders</h1>
-	<p class="hint">← → to move &nbsp;·&nbsp; Space to shoot &nbsp;·&nbsp; R to restart</p>
-	<div class="game" bind:this={container}></div>
-	<a href="/" class="back">← Home</a>
-</div>
+<div class="game" bind:this={container}></div>
+
+<p class="hint">↑ ↓ move &nbsp;·&nbsp; Space shoot &nbsp;·&nbsp; R restart</p>
+<a href="/" class="back">← Home</a>
 
 <style>
-	.page {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		min-height: 100vh;
+	:global(html, body) {
 		margin: 0;
-		padding: 1.5rem 0;
-		gap: 0.75rem;
-		font-family: 'Libre Baskerville', serif;
-		background: #fff;
-		color: #18181b;
-	}
-
-	h1 {
-		font-size: 2rem;
-		font-weight: 400;
-		margin: 0;
-	}
-
-	.hint {
-		font-family: monospace;
-		color: #52525b;
-		margin: 0;
+		padding: 0;
+		overflow: hidden;
+		background: #f4f4f5;
 	}
 
 	.game {
-		border: 2px solid #18181b;
-		line-height: 0;
+		position: fixed;
+		inset: 0;
+		width: 100vw;
+		height: 100vh;
+	}
+
+	.hint {
+		position: fixed;
+		bottom: 12px;
+		left: 50%;
+		transform: translateX(-50%);
+		margin: 0;
+		font-family: monospace;
+		color: #52525b;
+		pointer-events: none;
 	}
 
 	.back {
+		position: fixed;
+		bottom: 12px;
+		left: 16px;
 		font-family: monospace;
 		color: #18181b;
 		text-decoration: none;

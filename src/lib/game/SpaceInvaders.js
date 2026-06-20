@@ -1,8 +1,5 @@
 import Phaser from 'phaser';
 
-const WIDTH = 640;
-const HEIGHT = 720;
-
 // Light-mode palette
 const COLORS = {
 	background: 0xf4f4f5,
@@ -27,18 +24,18 @@ function createTextures(scene) {
 		g.destroy();
 	};
 
-	// Player ship: a little arrow-ish block.
+	// Player ship points to the right.
 	const ship = scene.make.graphics({ x: 0, y: 0, add: false });
 	ship.fillStyle(COLORS.player, 1);
-	ship.fillRect(0, 14, 44, 12); // base
-	ship.fillRect(16, 4, 12, 14); // turret
-	ship.generateTexture('player', 44, 26);
+	ship.fillRect(0, 0, 12, 44); // body
+	ship.fillRect(8, 16, 14, 12); // nose
+	ship.generateTexture('player', 26, 44);
 	ship.destroy();
 
-	make('invader', 36, 26, COLORS.invader);
-	make('invaderAlt', 36, 26, COLORS.invaderAlt);
-	make('playerBullet', 4, 16, COLORS.playerBullet);
-	make('invaderBullet', 4, 14, COLORS.invaderBullet);
+	make('invader', 30, 30, COLORS.invader);
+	make('invaderAlt', 30, 30, COLORS.invaderAlt);
+	make('playerBullet', 16, 4, COLORS.playerBullet);
+	make('invaderBullet', 14, 4, COLORS.invaderBullet);
 }
 
 class MainScene extends Phaser.Scene {
@@ -47,16 +44,20 @@ class MainScene extends Phaser.Scene {
 	}
 
 	create() {
+		const { width, height } = this.scale;
+
 		this.score = 0;
 		this.lives = 3;
 		this.isGameOver = false;
-		this.hasWon = false;
 
 		createTextures(this);
 
-		// Player
-		this.player = this.physics.add.sprite(WIDTH / 2, HEIGHT - 60, 'player');
+		// Player on the left, moves vertically.
+		this.player = this.physics.add.sprite(60, height / 2, 'player');
 		this.player.setCollideWorldBounds(true);
+
+		// The line invaders must not cross.
+		this.playerLine = 120;
 
 		// Groups
 		this.playerBullets = this.physics.add.group();
@@ -65,9 +66,9 @@ class MainScene extends Phaser.Scene {
 
 		this.spawnInvaders();
 
-		// Invader horizontal movement state
-		this.invaderDir = 1; // 1 = right, -1 = left
-		this.invaderSpeed = 40;
+		// Invader vertical movement state
+		this.invaderDir = 1; // 1 = down, -1 = up
+		this.invaderSpeed = 50;
 
 		// Input
 		this.cursors = this.input.keyboard.createCursorKeys();
@@ -77,15 +78,16 @@ class MainScene extends Phaser.Scene {
 		// HUD
 		this.scoreText = this.add.text(16, 12, 'Score: 0', {
 			fontFamily: 'monospace',
-			fontSize: '20px',
+			fontSize: '22px',
 			color: COLORS.text
 		});
-		this.livesText = this.add.text(WIDTH - 16, 12, 'Lives: 3', {
-			fontFamily: 'monospace',
-			fontSize: '20px',
-			color: COLORS.text
-		});
-		this.livesText.setOrigin(1, 0);
+		this.livesText = this.add
+			.text(width - 16, 12, 'Lives: 3', {
+				fontFamily: 'monospace',
+				fontSize: '22px',
+				color: COLORS.text
+			})
+			.setOrigin(1, 0);
 
 		// Collisions
 		this.physics.add.overlap(this.playerBullets, this.invaders, this.hitInvader, undefined, this);
@@ -98,28 +100,37 @@ class MainScene extends Phaser.Scene {
 			callback: this.invaderFire,
 			callbackScope: this
 		});
+
+		// Keep things sane on window resize.
+		this.scale.on('resize', this.handleResize, this);
+	}
+
+	handleResize(gameSize) {
+		if (!this.livesText) return;
+		this.livesText.setX(gameSize.width - 16);
 	}
 
 	spawnInvaders() {
-		const rows = 4;
-		const cols = 8;
-		const startX = 90;
-		const startY = 90;
-		const gapX = 60;
-		const gapY = 52;
+		const { width, height } = this.scale;
+		const rows = 5; // vertical count
+		const cols = 6; // horizontal count
+		const gapX = 56;
+		const gapY = 56;
+		const startX = width - 90 - (cols - 1) * gapX;
+		const startY = height / 2 - ((rows - 1) * gapY) / 2;
 
-		for (let r = 0; r < rows; r++) {
-			for (let c = 0; c < cols; c++) {
-				const key = r % 2 === 0 ? 'invader' : 'invaderAlt';
+		for (let c = 0; c < cols; c++) {
+			for (let r = 0; r < rows; r++) {
+				const key = c % 2 === 0 ? 'invader' : 'invaderAlt';
 				const inv = this.invaders.create(startX + c * gapX, startY + r * gapY, key);
-				inv.setData('points', (rows - r) * 10);
+				inv.setData('points', (cols - c) * 10);
 			}
 		}
 	}
 
 	fireBullet() {
-		const bullet = this.playerBullets.create(this.player.x, this.player.y - 20, 'playerBullet');
-		bullet.setVelocityY(-450);
+		const bullet = this.playerBullets.create(this.player.x + 24, this.player.y, 'playerBullet');
+		bullet.setVelocityX(550);
 		bullet.body.setAllowGravity(false);
 	}
 
@@ -128,8 +139,8 @@ class MainScene extends Phaser.Scene {
 		const alive = this.invaders.getChildren().filter((i) => i.active);
 		if (alive.length === 0) return;
 		const shooter = Phaser.Utils.Array.GetRandom(alive);
-		const bullet = this.invaderBullets.create(shooter.x, shooter.y + 20, 'invaderBullet');
-		bullet.setVelocityY(220);
+		const bullet = this.invaderBullets.create(shooter.x - 20, shooter.y, 'invaderBullet');
+		bullet.setVelocityX(-260);
 		bullet.body.setAllowGravity(false);
 	}
 
@@ -155,17 +166,18 @@ class MainScene extends Phaser.Scene {
 	}
 
 	endText(message, color) {
+		const { width, height } = this.scale;
 		this.add
-			.text(WIDTH / 2, HEIGHT / 2 - 20, message, {
+			.text(width / 2, height / 2 - 20, message, {
 				fontFamily: 'monospace',
-				fontSize: '44px',
+				fontSize: '52px',
 				color
 			})
 			.setOrigin(0.5);
 		this.add
-			.text(WIDTH / 2, HEIGHT / 2 + 30, 'Press R to play again', {
+			.text(width / 2, height / 2 + 36, 'Press R to play again', {
 				fontFamily: 'monospace',
-				fontSize: '20px',
+				fontSize: '22px',
 				color: COLORS.text
 			})
 			.setOrigin(0.5);
@@ -184,7 +196,6 @@ class MainScene extends Phaser.Scene {
 	win() {
 		if (this.isGameOver) return;
 		this.isGameOver = true;
-		this.hasWon = true;
 		this.fireTimer.remove();
 		this.physics.pause();
 		this.endText('YOU WIN!', '#16a34a');
@@ -193,28 +204,31 @@ class MainScene extends Phaser.Scene {
 	update(time) {
 		if (this.isGameOver) return;
 
-		// Player movement
-		const speed = 320;
-		if (this.cursors.left.isDown) {
-			this.player.setVelocityX(-speed);
-		} else if (this.cursors.right.isDown) {
-			this.player.setVelocityX(speed);
+		const { height } = this.scale;
+
+		// Player moves up/down.
+		const speed = 360;
+		if (this.cursors.up.isDown) {
+			this.player.setVelocityY(-speed);
+		} else if (this.cursors.down.isDown) {
+			this.player.setVelocityY(speed);
 		} else {
-			this.player.setVelocityX(0);
+			this.player.setVelocityY(0);
 		}
 
 		// Firing (rate limited)
 		if (this.fireKey.isDown && time > this.lastFired) {
 			this.fireBullet();
-			this.lastFired = time + 350;
+			this.lastFired = time + 320;
 		}
 
-		// Move invaders as a block; reverse + drop when one hits the edge.
+		// Invaders march vertically as a block; reverse + step left at top/bottom edge.
 		let hitEdge = false;
-		const margin = 24;
+		const margin = 30;
+		const delta = this.game.loop.delta / 1000;
 		this.invaders.getChildren().forEach((inv) => {
-			inv.x += this.invaderDir * this.invaderSpeed * (this.game.loop.delta / 1000);
-			if (inv.x > WIDTH - margin || inv.x < margin) {
+			inv.y += this.invaderDir * this.invaderSpeed * delta;
+			if (inv.y > height - margin || inv.y < margin + 40) {
 				hitEdge = true;
 			}
 		});
@@ -222,24 +236,23 @@ class MainScene extends Phaser.Scene {
 		if (hitEdge) {
 			this.invaderDir *= -1;
 			this.invaders.getChildren().forEach((inv) => {
-				inv.y += 24;
-				// Reached the player line -> game over
-				if (inv.y > HEIGHT - 100) {
+				inv.x -= 28; // advance toward the player
+				if (inv.x < this.playerLine) {
 					this.gameOver();
 				}
 			});
-			// Speed up a touch as invaders thin out / advance
-			this.invaderSpeed = Math.min(this.invaderSpeed + 6, 140);
+			this.invaderSpeed = Math.min(this.invaderSpeed + 8, 160);
 		}
 
 		// Clean up off-screen bullets
-		this.cleanupBullets(this.playerBullets, -20);
-		this.cleanupBullets(this.invaderBullets, HEIGHT + 20);
+		this.cleanupBullets(this.playerBullets);
+		this.cleanupBullets(this.invaderBullets);
 	}
 
-	cleanupBullets(group, bound) {
+	cleanupBullets(group) {
+		const { width } = this.scale;
 		group.getChildren().forEach((b) => {
-			if (b.y < -20 || b.y > HEIGHT + 20) b.destroy();
+			if (b.x < -20 || b.x > width + 20) b.destroy();
 		});
 	}
 }
@@ -252,10 +265,13 @@ class MainScene extends Phaser.Scene {
 export function startGame(parent) {
 	const config = {
 		type: Phaser.AUTO,
-		width: WIDTH,
-		height: HEIGHT,
 		parent,
 		backgroundColor: COLORS.background,
+		scale: {
+			mode: Phaser.Scale.RESIZE,
+			width: '100%',
+			height: '100%'
+		},
 		physics: {
 			default: 'arcade',
 			arcade: { gravity: { y: 0 }, debug: false }
