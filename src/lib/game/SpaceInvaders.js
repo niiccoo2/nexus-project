@@ -76,8 +76,7 @@ class MainScene extends Phaser.Scene {
 		this.lastFired = 0;
 
 		// HUD
-		// Sits below the top-left camera cutoff (reserved 240x180 area).
-		this.scoreText = this.add.text(20, 212, 'Score: 0', {
+		this.scoreText = this.add.text(16, 12, 'Score: 0', {
 			fontFamily: 'monospace',
 			fontSize: '22px',
 			color: COLORS.text

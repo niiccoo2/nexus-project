@@ -54,8 +54,8 @@
 
 	.camera-cutoff {
 		position: fixed;
-		top: 16px;
-		left: 16px;
+		bottom: 16px;
+		right: 16px;
 		width: 240px;
 		height: 180px;
 		border: 2px solid #18181b;
