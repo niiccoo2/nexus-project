@@ -1,21 +1,14 @@
 import Phaser from 'phaser';
+import redShipUrl from '../../assets/sprites/red_spaceship.png';
+import whiteShipUrl from '../../assets/sprites/white_spaceship.png';
 
-// Light-mode palette
 const COLORS = {
-	background: 0xf4f4f5,
-	player: 0x2563eb,
-	playerBullet: 0x1d4ed8,
-	invader: 0x18181b,
-	invaderAlt: 0x52525b,
-	invaderBullet: 0xdc2626,
-	text: '#18181b'
+	playerBullet: 0x60a5fa,
+	invaderBullet: 0xef4444,
+	text: '#e4e4e7'
 };
 
-/**
- * Build a few simple textures from rectangles so the game needs no asset files.
- * @param {Phaser.Scene} scene
- */
-function createTextures(scene) {
+function createBulletTextures(scene) {
 	const make = (key, w, h, color) => {
 		const g = scene.make.graphics({ x: 0, y: 0, add: false });
 		g.fillStyle(color, 1);
@@ -23,24 +16,31 @@ function createTextures(scene) {
 		g.generateTexture(key, w, h);
 		g.destroy();
 	};
+	make('playerBullet', 22, 6, COLORS.playerBullet);
+	make('invaderBullet', 18, 6, COLORS.invaderBullet);
+}
 
-	// Player ship points to the right.
-	const ship = scene.make.graphics({ x: 0, y: 0, add: false });
-	ship.fillStyle(COLORS.player, 1);
-	ship.fillRect(0, 0, 12, 44); // body
-	ship.fillRect(8, 16, 14, 12); // nose
-	ship.generateTexture('player', 26, 44);
-	ship.destroy();
-
-	make('invader', 30, 30, COLORS.invader);
-	make('invaderAlt', 30, 30, COLORS.invaderAlt);
-	make('playerBullet', 16, 4, COLORS.playerBullet);
-	make('invaderBullet', 14, 4, COLORS.invaderBullet);
+function createStarfield(scene) {
+	const { width, height } = scene.scale;
+	const g = scene.add.graphics();
+	for (let i = 0; i < 140; i++) {
+		const x = Phaser.Math.Between(0, width);
+		const y = Phaser.Math.Between(0, height);
+		const size = Math.random() < 0.15 ? 2 : 1;
+		const alpha = Phaser.Math.FloatBetween(0.15, 0.75);
+		g.fillStyle(0xffffff, alpha);
+		g.fillRect(x, y, size, size);
+	}
 }
 
 class MainScene extends Phaser.Scene {
 	constructor() {
 		super('main');
+	}
+
+	preload() {
+		this.load.image('player', whiteShipUrl);
+		this.load.image('invader', redShipUrl);
 	}
 
 	create() {
@@ -50,29 +50,40 @@ class MainScene extends Phaser.Scene {
 		this.lives = 3;
 		this.isGameOver = false;
 
-		createTextures(this);
+		// Dash state
+		this.isDashing = false;
+		this.dashCooldown = 0;
+		this.DASH_DURATION = 160;
+		this.DASH_COOLDOWN = 900;
 
-		// Player on the left, moves vertically.
-		this.player = this.physics.add.sprite(60, height / 2, 'player');
-		this.player.setCollideWorldBounds(true);
+		// Time stop state
+		this.timeStopped = false;
+		this.timeStopCooldown = 0;
+		this.TIME_STOP_DURATION = 3000;
+		this.TIME_STOP_COOLDOWN = 8000;
 
-		// The line invaders must not cross.
-		this.playerLine = 120;
+		createStarfield(this);
+		createBulletTextures(this);
 
-		// Groups
+		this.player = this.physics.add.sprite(90, height / 2, 'player');
+		this.player.setDisplaySize(72, 42).setAngle(90).setCollideWorldBounds(true);
+
+		this.playerLine = 150;
+
 		this.playerBullets = this.physics.add.group();
 		this.invaderBullets = this.physics.add.group();
 		this.invaders = this.physics.add.group();
 
 		this.spawnInvaders();
 
-		// Invader vertical movement state
-		this.invaderDir = 1; // 1 = down, -1 = up
+		this.invaderDir = 1;
 		this.invaderSpeed = 50;
 
 		// Input
 		this.cursors = this.input.keyboard.createCursorKeys();
 		this.fireKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+		this.dashKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D);
+		this.timeStopKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.T);
 		this.lastFired = 0;
 
 		// HUD
@@ -89,11 +100,18 @@ class MainScene extends Phaser.Scene {
 			})
 			.setOrigin(1, 0);
 
+		// Ability HUD
+		this.dashLabel = this.add
+			.text(16, height - 36, 'DASH [D]', { fontFamily: 'monospace', fontSize: '14px', color: '#60a5fa' })
+			.setDepth(10);
+		this.timeStopLabel = this.add
+			.text(170, height - 36, 'TIME STOP [T]', { fontFamily: 'monospace', fontSize: '14px', color: '#a78bfa' })
+			.setDepth(10);
+
 		// Collisions
 		this.physics.add.overlap(this.playerBullets, this.invaders, this.hitInvader, undefined, this);
 		this.physics.add.overlap(this.invaderBullets, this.player, this.hitPlayer, undefined, this);
 
-		// Invader firing timer
 		this.fireTimer = this.time.addEvent({
 			delay: 800,
 			loop: true,
@@ -101,47 +119,109 @@ class MainScene extends Phaser.Scene {
 			callbackScope: this
 		});
 
-		// Keep things sane on window resize.
 		this.scale.on('resize', this.handleResize, this);
 	}
 
 	handleResize(gameSize) {
 		if (!this.livesText) return;
 		this.livesText.setX(gameSize.width - 16);
+		this.dashLabel?.setY(gameSize.height - 36);
+		this.timeStopLabel?.setY(gameSize.height - 36);
 	}
 
 	spawnInvaders() {
 		const { width, height } = this.scale;
-		const rows = 5; // vertical count
-		const cols = 6; // horizontal count
-		const gapX = 56;
-		const gapY = 56;
-		const startX = width - 90 - (cols - 1) * gapX;
+		const rows = 5;
+		const cols = 6;
+		const gapX = 72;
+		const gapY = 70;
+		const startX = width - 110 - (cols - 1) * gapX;
 		const startY = height / 2 - ((rows - 1) * gapY) / 2;
 
 		for (let c = 0; c < cols; c++) {
 			for (let r = 0; r < rows; r++) {
-				const key = c % 2 === 0 ? 'invader' : 'invaderAlt';
-				const inv = this.invaders.create(startX + c * gapX, startY + r * gapY, key);
+				const inv = this.invaders.create(startX + c * gapX, startY + r * gapY, 'invader');
+				inv.setDisplaySize(54, 54).setAngle(-90);
 				inv.setData('points', (cols - c) * 10);
 			}
 		}
 	}
 
 	fireBullet() {
-		const bullet = this.playerBullets.create(this.player.x + 24, this.player.y, 'playerBullet');
-		bullet.setVelocityX(550);
+		const bullet = this.playerBullets.create(this.player.x + 38, this.player.y, 'playerBullet');
+		bullet.setVelocityX(680);
 		bullet.body.setAllowGravity(false);
 	}
 
 	invaderFire() {
-		if (this.isGameOver) return;
+		if (this.isGameOver || this.timeStopped) return;
 		const alive = this.invaders.getChildren().filter((i) => i.active);
 		if (alive.length === 0) return;
 		const shooter = Phaser.Utils.Array.GetRandom(alive);
-		const bullet = this.invaderBullets.create(shooter.x - 20, shooter.y, 'invaderBullet');
-		bullet.setVelocityX(-260);
+		const bullet = this.invaderBullets.create(shooter.x - 30, shooter.y, 'invaderBullet');
+		bullet.setVelocityX(-300);
 		bullet.body.setAllowGravity(false);
+	}
+
+	doDash(time) {
+		if (this.isDashing || time < this.dashCooldown) return;
+		const dir = this.cursors.up.isDown ? -1 : this.cursors.down.isDown ? 1 : 0;
+		if (dir === 0) return;
+
+		this.isDashing = true;
+		this.dashCooldown = time + this.DASH_COOLDOWN;
+		this.dashLabel.setColor('#374151');
+
+		// Afterimage ghosts trail behind the player
+		for (let i = 0; i < 5; i++) {
+			this.time.delayedCall(i * 28, () => {
+				if (!this.player?.active) return;
+				const ghost = this.add.image(this.player.x, this.player.y, 'player');
+				ghost.setDisplaySize(72, 42).setAngle(90).setAlpha(0.5 - i * 0.08).setTint(0x60a5fa);
+				this.tweens.add({
+					targets: ghost,
+					alpha: 0,
+					y: ghost.y - dir * (i * 12),
+					duration: 220,
+					ease: 'Quad.easeOut',
+					onComplete: () => ghost.destroy()
+				});
+			});
+		}
+
+		this.cameras.main.shake(130, 0.007);
+		this.player.setVelocityY(dir * 950);
+
+		this.time.delayedCall(this.DASH_DURATION, () => {
+			this.isDashing = false;
+		});
+		this.time.delayedCall(this.DASH_COOLDOWN, () => {
+			this.dashLabel.setColor('#60a5fa');
+		});
+	}
+
+	doTimeStop(time) {
+		if (this.timeStopped || time < this.timeStopCooldown) return;
+
+		this.timeStopped = true;
+		this.timeStopCooldown = time + this.TIME_STOP_COOLDOWN;
+		this.timeStopLabel.setColor('#374151');
+
+		// Freeze invader bullets in place
+		this.invaderBullets.getChildren().forEach((b) => b.setVelocityX(0));
+
+		// Tint enemies violet to show they're frozen
+		this.invaders.getChildren().forEach((inv) => inv.setTint(0xa78bfa));
+
+		// Cold blue screen flash
+		this.cameras.main.flash(250, 60, 40, 160);
+
+		this.time.delayedCall(this.TIME_STOP_DURATION, () => {
+			this.timeStopped = false;
+			this.invaderBullets.getChildren().forEach((b) => b.setVelocityX(-300));
+			this.invaders.getChildren().forEach((inv) => inv.clearTint());
+			this.timeStopLabel.setColor('#a78bfa');
+		});
 	}
 
 	hitInvader(bullet, invader) {
@@ -155,11 +235,13 @@ class MainScene extends Phaser.Scene {
 		}
 	}
 
-	hitPlayer(player, bullet) {
+	hitPlayer(bullet, player) {
+		if (this.isDashing) return; // invincible during dash
 		bullet.destroy();
 		this.lives -= 1;
 		this.livesText.setText('Lives: ' + this.lives);
-		this.cameras.main.flash(150, 220, 38, 38);
+		this.cameras.main.shake(200, 0.014);
+		this.cameras.main.flash(120, 220, 38, 38);
 		if (this.lives <= 0) {
 			this.gameOver();
 		}
@@ -190,7 +272,7 @@ class MainScene extends Phaser.Scene {
 		this.isGameOver = true;
 		this.fireTimer.remove();
 		this.physics.pause();
-		this.endText('GAME OVER', '#dc2626');
+		this.endText('GAME OVER', '#ef4444');
 	}
 
 	win() {
@@ -198,7 +280,7 @@ class MainScene extends Phaser.Scene {
 		this.isGameOver = true;
 		this.fireTimer.remove();
 		this.physics.pause();
-		this.endText('YOU WIN!', '#16a34a');
+		this.endText('YOU WIN!', '#4ade80');
 	}
 
 	update(time) {
@@ -206,45 +288,51 @@ class MainScene extends Phaser.Scene {
 
 		const { height } = this.scale;
 
-		// Player moves up/down.
-		const speed = 360;
-		if (this.cursors.up.isDown) {
-			this.player.setVelocityY(-speed);
-		} else if (this.cursors.down.isDown) {
-			this.player.setVelocityY(speed);
-		} else {
-			this.player.setVelocityY(0);
+		if (Phaser.Input.Keyboard.JustDown(this.dashKey)) {
+			this.doDash(time);
 		}
 
-		// Firing (rate limited)
+		if (Phaser.Input.Keyboard.JustDown(this.timeStopKey)) {
+			this.doTimeStop(time);
+		}
+
+		// Normal movement — suppressed while dashing
+		if (!this.isDashing) {
+			const speed = 360;
+			if (this.cursors.up.isDown) {
+				this.player.setVelocityY(-speed);
+			} else if (this.cursors.down.isDown) {
+				this.player.setVelocityY(speed);
+			} else {
+				this.player.setVelocityY(0);
+			}
+		}
+
 		if (this.fireKey.isDown && time > this.lastFired) {
 			this.fireBullet();
-			this.lastFired = time + 320;
+			this.lastFired = time + 280;
 		}
 
-		// Invaders march vertically as a block; reverse + step left at top/bottom edge.
-		let hitEdge = false;
-		const margin = 30;
-		const delta = this.game.loop.delta / 1000;
-		this.invaders.getChildren().forEach((inv) => {
-			inv.y += this.invaderDir * this.invaderSpeed * delta;
-			if (inv.y > height - margin || inv.y < margin + 40) {
-				hitEdge = true;
-			}
-		});
-
-		if (hitEdge) {
-			this.invaderDir *= -1;
+		// Invaders freeze during time stop
+		if (!this.timeStopped) {
+			let hitEdge = false;
+			const margin = 30;
+			const delta = this.game.loop.delta / 1000;
 			this.invaders.getChildren().forEach((inv) => {
-				inv.x -= 28; // advance toward the player
-				if (inv.x < this.playerLine) {
-					this.gameOver();
-				}
+				inv.y += this.invaderDir * this.invaderSpeed * delta;
+				if (inv.y > height - margin || inv.y < margin + 40) hitEdge = true;
 			});
-			this.invaderSpeed = Math.min(this.invaderSpeed + 8, 160);
+
+			if (hitEdge) {
+				this.invaderDir *= -1;
+				this.invaders.getChildren().forEach((inv) => {
+					inv.x -= 34;
+					if (inv.x < this.playerLine) this.gameOver();
+				});
+				this.invaderSpeed = Math.min(this.invaderSpeed + 8, 160);
+			}
 		}
 
-		// Clean up off-screen bullets
 		this.cleanupBullets(this.playerBullets);
 		this.cleanupBullets(this.invaderBullets);
 	}
@@ -257,16 +345,11 @@ class MainScene extends Phaser.Scene {
 	}
 }
 
-/**
- * Boot the Phaser game inside the given parent element.
- * @param {HTMLElement} parent
- * @returns {Phaser.Game}
- */
 export function startGame(parent) {
 	const config = {
 		type: Phaser.AUTO,
 		parent,
-		backgroundColor: COLORS.background,
+		backgroundColor: 0x000000,
 		scale: {
 			mode: Phaser.Scale.RESIZE,
 			width: '100%',
