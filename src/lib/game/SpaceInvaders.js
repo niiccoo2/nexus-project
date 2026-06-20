@@ -537,7 +537,25 @@ class MainScene extends Phaser.Scene {
 		if (this.isDashing || time < this.dashCooldown) return;
 		const dir = this.cursors.up.isDown ? -1 : this.cursors.down.isDown ? 1 : 0;
 		if (dir === 0) return;
+		this.executeDash(time, dir);
+	}
 
+	// Gesture-triggered dash: pick a direction from the hand target or
+	// the player's current velocity so the gesture is always usable.
+	doGestureDash(time) {
+		if (this.isDashing || time < this.dashCooldown) return;
+		const c = this.game.controls;
+		let dir = 0;
+		if (c?.targetY != null) {
+			const target = c.targetY * this.scale.height;
+			dir = target < this.player.y ? -1 : 1;
+		} else {
+			dir = this.player.body?.velocity.y < 0 ? -1 : 1;
+		}
+		this.executeDash(time, dir);
+	}
+
+	executeDash(time, dir) {
 		this.isDashing = true;
 		this.dashCooldown = time + this.DASH_COOLDOWN;
 		this.dashLabel.setColor('#374151');
@@ -922,20 +940,38 @@ class MainScene extends Phaser.Scene {
 			if (s.x < -2) s.x = width + 2;
 		}
 
-		// Abilities
+		const ctrl = this.game.controls;
+
+		// Abilities — keyboard + gesture-driven one-shots
 		if (Phaser.Input.Keyboard.JustDown(this.dashKey)) this.doDash(time);
 		if (Phaser.Input.Keyboard.JustDown(this.timeStopKey)) this.doTimeStop(time);
-
-		// Player vertical movement
-		if (!this.isDashing) {
-			const speed = 360;
-			if (this.cursors.up.isDown) this.player.setVelocityY(-speed);
-			else if (this.cursors.down.isDown) this.player.setVelocityY(speed);
-			else this.player.setVelocityY(0);
+		if (ctrl?.dash) {
+			ctrl.dash = false;
+			this.doGestureDash(time);
+		}
+		if (ctrl?.timeStop) {
+			ctrl.timeStop = false;
+			this.doTimeStop(time);
 		}
 
-		// Firing
-		if (this.fireKey.isDown && time > this.lastFired) this.fireBullet(time);
+		// Player vertical movement — gesture target overrides keyboard when present.
+		if (!this.isDashing) {
+			if (ctrl?.targetY != null) {
+				const targetY = Phaser.Math.Clamp(ctrl.targetY, 0.04, 0.96) * height;
+				const dy = targetY - this.player.y;
+				const vy = Phaser.Math.Clamp(dy * 11, -520, 520);
+				this.player.setVelocityY(vy);
+			} else {
+				const speed = 360;
+				if (this.cursors.up.isDown) this.player.setVelocityY(-speed);
+				else if (this.cursors.down.isDown) this.player.setVelocityY(speed);
+				else this.player.setVelocityY(0);
+			}
+		}
+
+		// Firing — held keyboard fire or pinched gesture
+		const wantsFire = this.fireKey.isDown || ctrl?.shoot === true;
+		if (wantsFire && time > this.lastFired) this.fireBullet(time);
 
 		// Formation movement (skip boss & time stop)
 		if (!this.timeStopped && !this.isBossWave) {
@@ -1023,5 +1059,14 @@ export function startGame(parent) {
 		scene: [MainScene]
 	};
 
-	return new Phaser.Game(config);
+	const game = new Phaser.Game(config);
+	// External control surface. Anything (hand tracker, gamepad, mouse) can
+	// drive the game by mutating this object; keyboard still works alongside.
+	game.controls = {
+		targetY: null, // 0..1 normalised vertical position; null = keyboard mode
+		shoot: false, // continuous
+		dash: false, // one-shot; scene consumes & resets
+		timeStop: false // one-shot
+	};
+	return game;
 }
