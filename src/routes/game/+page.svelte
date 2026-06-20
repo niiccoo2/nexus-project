@@ -34,7 +34,7 @@
 	<span class="camera-label">Camera</span>
 </div>
 
-<p class="hint">↑ ↓ move &nbsp;·&nbsp; Space shoot &nbsp;·&nbsp; R restart</p>
+<p class="hint">↑ ↓ move &nbsp;·&nbsp; Space shoot &nbsp;·&nbsp; D dash &nbsp;·&nbsp; T time stop &nbsp;·&nbsp; R restart</p>
 <a href="/" class="back">← Home</a>
 
 <style>
@@ -42,7 +42,7 @@
 		margin: 0;
 		padding: 0;
 		overflow: hidden;
-		background: #f4f4f5;
+		background: #000000;
 	}
 
 	.game {
@@ -98,12 +98,12 @@
 		bottom: 12px;
 		left: 16px;
 		font-family: monospace;
-		color: #18181b;
+		color: #71717a;
 		text-decoration: none;
 		border-bottom: 1px solid transparent;
 	}
 
 	.back:hover {
-		border-bottom-color: #18181b;
+		border-bottom-color: #71717a;
 	}
 </style>
