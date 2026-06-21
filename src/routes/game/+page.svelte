@@ -16,6 +16,22 @@
 	let lastGestureAt = 0;
 	let fps = 0;
 
+	let shopOpen = false;
+	let shopCoins = 0;
+	/** @type {Record<string, number>} */
+	let shopUpgrades = {};
+	/** @type {Record<string, { costs: number[], label: string, color: string }>} */
+	let shopItems = {};
+
+	function handleBuy(/** @type {string} */ type) {
+		game?.controls?.shopCallback?.buy(type);
+	}
+
+	function handleCloseShop() {
+		shopOpen = false;
+		game?.controls?.shopCallback?.close();
+	}
+
 	/** @typedef {{ x:number, y:number, z?:number }} LM */
 
 	// Skeleton connections — pairs of landmark indices.
@@ -174,6 +190,19 @@
 				const { startGame } = await import('$lib/game/SpaceInvaders.js');
 				if (destroyed) return;
 				game = startGame(container);
+				game.events.on('shop:open', (/** @type {any} */ data) => {
+					shopCoins = data.coins;
+					shopUpgrades = { ...data.upgrades };
+					shopItems = data.items;
+					shopOpen = true;
+				});
+				game.events.on('shop:update', (/** @type {any} */ data) => {
+					shopCoins = data.coins;
+					shopUpgrades = { ...data.upgrades };
+				});
+				game.events.on('shop:close', () => {
+					shopOpen = false;
+				});
 			} catch (err) {
 				errorMsg = err instanceof Error ? err.stack || err.message : String(err);
 				return;
@@ -452,6 +481,44 @@
 	<pre class="error">{errorMsg}</pre>
 {/if}
 
+{#if shopOpen}
+	<div class="shop-backdrop">
+		<div class="shop-panel">
+			<div class="shop-header">
+				<span class="shop-title">UPGRADE SHOP</span>
+				<span class="shop-coins">◈&nbsp;&nbsp;{shopCoins}</span>
+			</div>
+			<div class="shop-grid">
+				{#each Object.entries(shopItems) as [type, item]}
+					{@const level = shopUpgrades[type] ?? 0}
+					{@const maxed = level >= item.costs.length}
+					{@const cost = maxed ? null : item.costs[level]}
+					{@const canAfford = cost != null && shopCoins >= cost}
+					<div class="shop-item" class:maxed>
+						<div class="item-name" style="color: {item.color}">{item.label}</div>
+						<div class="item-levels">
+							{#each item.costs as _, i}
+								<span class="level-pip" class:filled={i < level}></span>
+							{/each}
+						</div>
+						<button
+							class="buy-btn"
+							class:affordable={canAfford && !maxed}
+							disabled={maxed || !canAfford}
+							on:click={() => handleBuy(type)}
+						>
+							{maxed ? 'MAX' : `◈  ${cost}`}
+						</button>
+					</div>
+				{/each}
+			</div>
+			<button class="continue-btn" on:click={handleCloseShop}>
+				▶&nbsp;&nbsp;NEXT WAVE
+			</button>
+		</div>
+	</div>
+{/if}
+
 <style>
 	:global(html, body) {
 		margin: 0;
@@ -674,5 +741,150 @@
 		white-space: pre-wrap;
 		border-radius: 6px;
 		z-index: 100;
+	}
+
+	/* ── Shop overlay ── */
+
+	.shop-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 60;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: rgba(0, 0, 0, 0.55);
+		backdrop-filter: blur(16px);
+		-webkit-backdrop-filter: blur(16px);
+	}
+
+	.shop-panel {
+		background: rgba(9, 9, 11, 0.94);
+		border: 1px solid rgba(228, 228, 231, 0.14);
+		border-radius: 16px;
+		padding: 32px 36px;
+		width: 560px;
+		max-width: 94vw;
+		box-shadow:
+			0 0 64px rgba(34, 211, 238, 0.1),
+			0 24px 56px rgba(0, 0, 0, 0.7);
+	}
+
+	.shop-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 28px;
+	}
+
+	.shop-title {
+		font-family: ui-monospace, 'JetBrains Mono', monospace;
+		font-size: 20px;
+		color: #22d3ee;
+		letter-spacing: 0.1em;
+	}
+
+	.shop-coins {
+		font-family: ui-monospace, 'JetBrains Mono', monospace;
+		font-size: 18px;
+		color: #fbbf24;
+	}
+
+	.shop-grid {
+		display: grid;
+		grid-template-columns: repeat(5, 1fr);
+		gap: 10px;
+		margin-bottom: 24px;
+	}
+
+	.shop-item {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 10px;
+		padding: 14px 8px;
+		background: rgba(228, 228, 231, 0.04);
+		border: 1px solid rgba(228, 228, 231, 0.1);
+		border-radius: 10px;
+		text-align: center;
+		transition: border-color 0.2s;
+	}
+
+	.shop-item:not(.maxed):hover {
+		border-color: rgba(228, 228, 231, 0.24);
+	}
+
+	.shop-item.maxed {
+		opacity: 0.42;
+	}
+
+	.item-name {
+		font-family: ui-monospace, 'JetBrains Mono', monospace;
+		font-size: 10px;
+		font-weight: bold;
+		letter-spacing: 0.07em;
+	}
+
+	.item-levels {
+		display: flex;
+		gap: 4px;
+		align-items: center;
+	}
+
+	.level-pip {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		border: 1px solid rgba(228, 228, 231, 0.28);
+		background: transparent;
+		transition:
+			background 0.2s,
+			border-color 0.2s;
+	}
+
+	.level-pip.filled {
+		background: #22d3ee;
+		border-color: #22d3ee;
+	}
+
+	.buy-btn {
+		width: 100%;
+		padding: 7px 4px;
+		font-family: ui-monospace, 'JetBrains Mono', monospace;
+		font-size: 11px;
+		border-radius: 6px;
+		border: 1px solid rgba(228, 228, 231, 0.1);
+		background: rgba(228, 228, 231, 0.04);
+		color: #52525b;
+		cursor: not-allowed;
+	}
+
+	.buy-btn.affordable {
+		border-color: rgba(251, 191, 36, 0.5);
+		color: #fbbf24;
+		background: rgba(251, 191, 36, 0.07);
+		cursor: pointer;
+	}
+
+	.buy-btn.affordable:hover {
+		background: rgba(251, 191, 36, 0.17);
+	}
+
+	.continue-btn {
+		display: block;
+		width: 100%;
+		padding: 14px;
+		font-family: ui-monospace, 'JetBrains Mono', monospace;
+		font-size: 15px;
+		letter-spacing: 0.06em;
+		border: 1px solid rgba(34, 211, 238, 0.35);
+		border-radius: 8px;
+		background: rgba(34, 211, 238, 0.07);
+		color: #22d3ee;
+		cursor: pointer;
+		transition: background 0.15s;
+	}
+
+	.continue-btn:hover {
+		background: rgba(34, 211, 238, 0.18);
 	}
 </style>

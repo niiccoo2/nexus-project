@@ -28,6 +28,15 @@ const POWERUP_WEIGHTS = { rapid: 3, triple: 3, shield: 3, life: 1, bomb: 2 };
 const POWERUP_DROP_CHANCE = 0.14;
 const POWERUP_DURATION = 8000;
 
+const SHOP_ITEMS = {
+	size:     { costs: [30, 60, 100], label: 'BIGGER',    color: '#60a5fa' },
+	speed:    { costs: [25, 50, 80],  label: 'SPEED',     color: '#fbbf24' },
+	health:   { costs: [40, 80, 120], label: 'HEALTH',    color: '#f472b6' },
+	fireRate: { costs: [35, 70, 110], label: 'FIRE RATE', color: '#22d3ee' },
+	shield:   { costs: [50, 90, 140], label: 'SHIELD+',   color: '#4ade80' },
+};
+const COIN_REWARDS = { standard: 2, fast: 3, sniper: 4, tank: 6, boss: 25 };
+
 const COMBO_DECAY = 2500;
 const HIGH_SCORE_KEY = 'spaceInvadersHighScoreV2';
 
@@ -510,6 +519,9 @@ class MainScene extends Phaser.Scene {
 		this.isPaused = false;
 		this.invulnerable = false;
 		this.isBossWave = false;
+		this.coins = 0;
+		this.shopIsOpen = false;
+		this.upgrades = { size: 0, speed: 0, health: 0, fireRate: 0, shield: 0 };
 
 		// Dash
 		this.isDashing = false;
@@ -634,6 +646,10 @@ class MainScene extends Phaser.Scene {
 				fontSize: '14px',
 				color: '#9ca3af'
 			})
+			.setDepth(10);
+
+		this.coinText = this.add
+			.text(16, 84, '◈  0', { fontFamily: 'monospace', fontSize: '14px', color: '#fbbf24' })
 			.setDepth(10);
 
 		this.comboText = this.add
@@ -927,7 +943,7 @@ class MainScene extends Phaser.Scene {
 		// Subtle recoil pushback for game feel
 		this.player.x = Math.max(40, this.player.x - 2);
 		playSweep(this, 1100, 1700, 0.05, 'square', 0.025);
-		const delay = time < this.rapidUntil ? 100 : 280;
+		const delay = time < this.rapidUntil ? 100 : Math.max(140, 280 - this.upgrades.fireRate * 40);
 		this.lastFired = time + delay;
 	}
 
@@ -1139,8 +1155,12 @@ class MainScene extends Phaser.Scene {
 		this.scoreText.setText('Score: ' + this.score);
 		this.showFloatingText(invader.x, invader.y, `+${gained}`);
 
-		const burstColor = invader.getData('originalTint') ?? 0xff6b6b;
 		const type = invader.getData('type');
+		const coinDrop = COIN_REWARDS[type] ?? 2;
+		this.coins += coinDrop;
+		this.coinText.setText('◈  ' + this.coins);
+
+		const burstColor = invader.getData('originalTint') ?? 0xff6b6b;
 		const burstCount = type === 'boss' ? 40 : type === 'tank' ? 18 : 10;
 		this.spawnParticles(invader.x, invader.y, burstColor, burstCount);
 		this.spawnShockwave(invader.x, invader.y, type === 'boss' ? 220 : type === 'tank' ? 120 : 70, burstColor);
@@ -1178,12 +1198,12 @@ class MainScene extends Phaser.Scene {
 					this.spawnParticles(invader.x, invader.y, 0xfde047, 18);
 				});
 			}
-			this.time.delayedCall(1800, () => this.startNextWave());
+			this.time.delayedCall(1800, () => this.openShopBetweenWaves());
 			return;
 		}
 
 		if (this.invaders.countActive(true) === 0 && !this.isBossWave) {
-			this.time.delayedCall(900, () => this.startNextWave());
+			this.time.delayedCall(900, () => this.openShopBetweenWaves());
 		}
 	}
 
@@ -1659,6 +1679,11 @@ class MainScene extends Phaser.Scene {
 	gameOver() {
 		if (this.isGameOver) return;
 		this.isGameOver = true;
+		if (this.shopIsOpen) {
+			this.shopIsOpen = false;
+			this.game.controls.shopCallback = null;
+			this.game.events.emit('shop:close');
+		}
 		this.saveHighScore();
 		this.fireTimer.remove();
 		this.bossFireTimer?.remove();
@@ -1714,6 +1739,67 @@ class MainScene extends Phaser.Scene {
 			this.physics.pause();
 			this.endText('GAME OVER', '#ef4444');
 		});
+	}
+
+	// ---------- Shop ----------
+
+	openShopBetweenWaves() {
+		if (this.isGameOver) return;
+		this.shopIsOpen = true;
+		this.game.controls.shopCallback = {
+			buy: (type) => this.buyUpgrade(type),
+			close: () => this.closeShop(),
+		};
+		this.game.events.emit('shop:open', {
+			coins: this.coins,
+			upgrades: { ...this.upgrades },
+			items: SHOP_ITEMS,
+		});
+	}
+
+	closeShop() {
+		if (!this.shopIsOpen) return;
+		this.shopIsOpen = false;
+		this.game.controls.shopCallback = null;
+		this.game.events.emit('shop:close');
+		this.startNextWave();
+	}
+
+	buyUpgrade(type) {
+		const item = SHOP_ITEMS[type];
+		if (!item) return;
+		const level = this.upgrades[type];
+		if (level >= item.costs.length) return;
+		const cost = item.costs[level];
+		if (this.coins < cost) return;
+		this.coins -= cost;
+		this.upgrades[type] += 1;
+		this.coinText.setText('◈  ' + this.coins);
+		this.applyUpgrade(type);
+		this.game.events.emit('shop:update', {
+			coins: this.coins,
+			upgrades: { ...this.upgrades },
+		});
+	}
+
+	applyUpgrade(type) {
+		const level = this.upgrades[type];
+		switch (type) {
+			case 'size': {
+				const w = 72 + level * 12;
+				const h = 42 + level * 7;
+				this.player.setDisplaySize(w, h);
+				this.shieldOrb.setRadius(44 + level * 8);
+				break;
+			}
+			case 'health': {
+				this.maxLives = Math.min(this.maxLives + 1, 8);
+				this.lives = Math.min(this.lives + 1, this.maxLives);
+				this.renderLives();
+				break;
+			}
+			default: break; // speed / fireRate / shield read dynamically in update/fireBullet
+		}
 	}
 
 	togglePause() {
@@ -1806,10 +1892,10 @@ class MainScene extends Phaser.Scene {
 			if (ctrl?.targetY != null) {
 				const targetY = Phaser.Math.Clamp(ctrl.targetY, 0.04, 0.96) * height;
 				const dy = targetY - this.player.y;
-				const vy = Phaser.Math.Clamp(dy * 11, -520, 520);
+				const vy = Phaser.Math.Clamp(dy * 11, -(520 + this.upgrades.speed * 50), 520 + this.upgrades.speed * 50);
 				this.player.setVelocityY(vy);
 			} else {
-				const speed = 360;
+				const speed = 360 + this.upgrades.speed * 60;
 				if (this.cursors.up.isDown) this.player.setVelocityY(-speed);
 				else if (this.cursors.down.isDown) this.player.setVelocityY(speed);
 				else this.player.setVelocityY(0);
@@ -1911,9 +1997,10 @@ export function startGame(parent) {
 	// drive the game by mutating this object; keyboard still works alongside.
 	game.controls = {
 		targetY: null, // 0..1 normalised vertical position; null = keyboard mode
-		shoot: false, // continuous
-		dash: false, // one-shot; scene consumes & resets
-		timeStop: false // one-shot
+		shoot: false,  // continuous
+		dash: false,   // one-shot; scene consumes & resets
+		timeStop: false, // one-shot
+		shopCallback: null, // set by scene when shop is open
 	};
 	return game;
 }
