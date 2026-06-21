@@ -121,6 +121,125 @@ function playNoise(scene, duration, vol = 0.05) {
 	src.start();
 }
 
+// Procedural background music: 8-step pentatonic arp + slow bass drone over
+// a soft pad. Mixed through a low-pass to take the edge off. The whole loop
+// is scheduled per tick — cheap, allocates nothing significant.
+class GameMusic {
+	constructor(ctx) {
+		this.ctx = ctx;
+		this.muted = false;
+		/** @type {ReturnType<typeof setInterval> | null} */
+		this.timer = null;
+		this.step = 0;
+		this.bassStep = 0;
+		this.intensity = 1.0; // ramps up over time / per wave
+		this.master = ctx.createGain();
+		this.master.gain.value = 0.0; // fade in
+		this.filter = ctx.createBiquadFilter();
+		this.filter.type = 'lowpass';
+		this.filter.frequency.value = 2400;
+		this.filter.Q.value = 0.3;
+		this.master.connect(this.filter).connect(ctx.destination);
+
+		// A-minor pentatonic, 2 octaves of arp interleaved.
+		this.arp = [220.0, 261.6, 329.6, 392.0, 523.2, 392.0, 329.6, 261.6];
+		this.bass = [55.0, 55.0, 82.4, 82.4]; // A1 A1 E2 E2
+	}
+	start() {
+		if (this.timer) return;
+		// fade in
+		const t = this.ctx.currentTime;
+		this.master.gain.cancelScheduledValues(t);
+		this.master.gain.setValueAtTime(this.master.gain.value, t);
+		this.master.gain.linearRampToValueAtTime(0.35, t + 1.5);
+		const stepMs = 230; // ~16th notes at ~130 bpm feel
+		this.timer = setInterval(() => this.tick(stepMs), stepMs);
+	}
+	stop() {
+		if (this.timer) clearInterval(this.timer);
+		this.timer = null;
+		const t = this.ctx.currentTime;
+		this.master.gain.cancelScheduledValues(t);
+		this.master.gain.setValueAtTime(this.master.gain.value, t);
+		this.master.gain.linearRampToValueAtTime(0, t + 0.4);
+	}
+	toggleMute() {
+		this.muted = !this.muted;
+		const t = this.ctx.currentTime;
+		this.master.gain.cancelScheduledValues(t);
+		this.master.gain.linearRampToValueAtTime(this.muted ? 0 : 0.35, t + 0.25);
+		return this.muted;
+	}
+	setIntensity(v) {
+		this.intensity = Math.max(0.5, Math.min(2.0, v));
+		this.filter.frequency.setTargetAtTime(
+			1200 + this.intensity * 1400,
+			this.ctx.currentTime,
+			0.5
+		);
+	}
+	tick(stepMs) {
+		if (this.muted || this.ctx.state !== 'running') return;
+		const t = this.ctx.currentTime;
+		// Arpeggio note
+		this.playNote(this.arp[this.step], stepMs / 1000 * 0.95, 'square', 0.04);
+		// Soft pad fifth above every 4 steps
+		if (this.step % 4 === 0) {
+			this.playNote(this.arp[this.step] * 1.5, 1.6, 'sine', 0.025);
+		}
+		this.step = (this.step + 1) % this.arp.length;
+		// Bass on each downbeat
+		if (this.step % 4 === 0) {
+			this.playNote(this.bass[this.bassStep], 0.45, 'triangle', 0.07);
+			this.bassStep = (this.bassStep + 1) % this.bass.length;
+		}
+	}
+	playNote(freq, dur, type, vol) {
+		const ctx = this.ctx;
+		const t = ctx.currentTime;
+		const osc = ctx.createOscillator();
+		const g = ctx.createGain();
+		osc.type = type;
+		osc.frequency.value = freq;
+		g.gain.setValueAtTime(0.0001, t);
+		g.gain.exponentialRampToValueAtTime(Math.max(0.0001, vol), t + 0.008);
+		g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+		osc.connect(g).connect(this.master);
+		osc.start(t);
+		osc.stop(t + dur + 0.05);
+	}
+}
+
+let _music = /** @type {GameMusic | null} */ (null);
+function getMusic(scene) {
+	const ctx = scene.sound?.context;
+	if (!ctx) return null;
+	if (!_music) _music = new GameMusic(ctx);
+	return _music;
+}
+
+function createNebula(scene) {
+	const { width, height } = scene.scale;
+	const clouds = [];
+	const palette = [
+		[0x60a5fa, 0.06], // blue
+		[0xa78bfa, 0.07], // violet
+		[0x22d3ee, 0.05], // cyan
+		[0xec4899, 0.04]  // magenta
+	];
+	for (let i = 0; i < 6; i++) {
+		const [color, baseAlpha] = palette[i % palette.length];
+		const r = Phaser.Math.Between(180, 360);
+		const x = Phaser.Math.Between(0, width);
+		const y = Phaser.Math.Between(0, height);
+		const cloud = scene.add.circle(x, y, r, color, baseAlpha).setDepth(-12);
+		cloud.setData('vx', Phaser.Math.FloatBetween(-4, -1));
+		cloud.setData('vy', Phaser.Math.FloatBetween(-1, 1));
+		clouds.push(cloud);
+	}
+	return clouds;
+}
+
 function createStarfield(scene) {
 	const { width, height } = scene.scale;
 	const layers = [
@@ -140,6 +259,227 @@ function createStarfield(scene) {
 		}
 	});
 	return stars;
+}
+
+class TitleScene extends Phaser.Scene {
+	constructor() {
+		super('title');
+	}
+
+	preload() {
+		this.load.image('heart', heartUrl);
+		this.load.image('player', whiteShipUrl);
+		this.load.image('invader', redShipUrl);
+	}
+
+	create() {
+		const { width, height } = this.scale;
+
+		this.nebula = createNebula(this);
+		this.stars = createStarfield(this);
+		createTextures(this);
+
+		// Drifting decoration ships
+		this.ambient = [];
+		for (let i = 0; i < 5; i++) {
+			const ship = this.add.image(
+				Phaser.Math.Between(0, width),
+				Phaser.Math.Between(80, height - 120),
+				'invader'
+			);
+			ship.setDisplaySize(40, 40).setAngle(-90).setAlpha(0.35).setTint(0xa855f7);
+			ship.setData('vx', Phaser.Math.FloatBetween(-22, -8));
+			ship.setData('vy', Phaser.Math.FloatBetween(-6, 6));
+			ship.setDepth(-5);
+			this.ambient.push(ship);
+		}
+
+		// Hero ship floating below title
+		const hero = this.add.image(width / 2, height / 2 + 30, 'player');
+		hero.setDisplaySize(96, 56).setAngle(90).setDepth(1);
+		this.tweens.add({
+			targets: hero,
+			y: hero.y + 12,
+			duration: 1800,
+			yoyo: true,
+			repeat: -1,
+			ease: 'Sine.easeInOut'
+		});
+		// glow under the ship
+		const glow = this.add.ellipse(hero.x, hero.y + 30, 120, 14, 0x60a5fa, 0.3).setDepth(0);
+		this.tweens.add({
+			targets: glow,
+			scaleX: { from: 0.9, to: 1.1 },
+			alpha: { from: 0.2, to: 0.45 },
+			duration: 1200,
+			yoyo: true,
+			repeat: -1
+		});
+
+		// Big title — drawn twice for glow effect
+		const titleStyle = {
+			fontFamily: 'monospace',
+			fontSize: '92px',
+			color: '#22d3ee',
+			stroke: '#0e7490',
+			strokeThickness: 6
+		};
+		const subtitleStyle = {
+			fontFamily: 'monospace',
+			fontSize: '92px',
+			color: '#e4e4e7',
+			stroke: '#a78bfa',
+			strokeThickness: 6
+		};
+		const titleGlow = this.add
+			.text(width / 2, height / 2 - 140, 'SPACE', titleStyle)
+			.setOrigin(0.5)
+			.setAlpha(0.4)
+			.setScale(1.06);
+		const title = this.add
+			.text(width / 2, height / 2 - 140, 'SPACE', titleStyle)
+			.setOrigin(0.5);
+		const sub = this.add
+			.text(width / 2, height / 2 - 60, 'INVADERS', subtitleStyle)
+			.setOrigin(0.5);
+		this.tweens.add({
+			targets: [titleGlow],
+			alpha: { from: 0.25, to: 0.55 },
+			scale: { from: 1.04, to: 1.12 },
+			duration: 1400,
+			yoyo: true,
+			repeat: -1,
+			ease: 'Sine.easeInOut'
+		});
+		this.tweens.add({
+			targets: [title, sub],
+			y: '+=4',
+			duration: 1800,
+			yoyo: true,
+			repeat: -1,
+			ease: 'Sine.easeInOut'
+		});
+
+		// Press start
+		const press = this.add
+			.text(width / 2, height - 180, '▶  PRESS  SPACE  OR  CLICK  TO  PLAY  ◀', {
+				fontFamily: 'monospace',
+				fontSize: '22px',
+				color: '#fbbf24'
+			})
+			.setOrigin(0.5);
+		this.tweens.add({
+			targets: press,
+			alpha: { from: 1, to: 0.25 },
+			duration: 700,
+			yoyo: true,
+			repeat: -1
+		});
+
+		// Controls
+		this.add
+			.text(
+				width / 2,
+				height - 130,
+				'↑ / ↓  MOVE      SPACE  SHOOT      D  DASH      T  TIME STOP',
+				{ fontFamily: 'monospace', fontSize: '13px', color: '#9ca3af' }
+			)
+			.setOrigin(0.5);
+		this.add
+			.text(width / 2, height - 110, 'P/ESC  PAUSE      M  MUTE MUSIC      R  RESTART', {
+				fontFamily: 'monospace',
+				fontSize: '13px',
+				color: '#6b7280'
+			})
+			.setOrigin(0.5);
+
+		// Top scores panel
+		this.renderTopScores();
+
+		// Version
+		this.add
+			.text(width - 12, height - 12, 'v1.0', {
+				fontFamily: 'monospace',
+				fontSize: '11px',
+				color: '#3f3f46'
+			})
+			.setOrigin(1, 1);
+
+		// Input — defer music start to a real user gesture so the AudioContext
+		// is in a 'running' state before we schedule notes.
+		const startWithMusic = () => {
+			const music = getMusic(this);
+			music?.setIntensity(0.7);
+			// sound.context might still need a kick on Safari
+			const ctx = this.sound?.context;
+			if (ctx && ctx.state === 'suspended') ctx.resume?.();
+			music?.start();
+			this.begin();
+		};
+		this.input.keyboard.once('keydown-SPACE', startWithMusic);
+		this.input.keyboard.once('keydown-ENTER', startWithMusic);
+		this.input.once('pointerdown', startWithMusic);
+	}
+
+	renderTopScores() {
+		const { width, height } = this.scale;
+		const board = getLeaderboard().slice(0, 3);
+		if (board.length === 0) return;
+		const panelY = height / 2 + 160;
+		this.add
+			.text(width / 2, panelY - 26, 'TOP SCORES', {
+				fontFamily: 'monospace',
+				fontSize: '14px',
+				color: '#22d3ee'
+			})
+			.setOrigin(0.5);
+		const medals = ['#fbbf24', '#d4d4d8', '#b06b3a'];
+		board.forEach((e, i) => {
+			this.add
+				.text(
+					width / 2,
+					panelY + i * 22,
+					`${i + 1}.  ${e.name}   ${String(e.score).padStart(6, ' ')}   W${e.wave}`,
+					{
+						fontFamily: 'monospace',
+						fontSize: '16px',
+						color: medals[i] || '#e4e4e7'
+					}
+				)
+				.setOrigin(0.5);
+		});
+	}
+
+	begin() {
+		this.cameras.main.fade(400, 0, 0, 0);
+		this.cameras.main.once('camerafadeoutcomplete', () => {
+			this.scene.start('main');
+		});
+	}
+
+	update(_time, deltaMs) {
+		const { width, height } = this.scale;
+		const dt = deltaMs / 1000;
+		for (const s of this.stars) {
+			s.x -= s.getData('speed') * dt;
+			if (s.x < -2) s.x = width + 2;
+		}
+		for (const n of this.nebula) {
+			n.x += n.getData('vx') * dt;
+			n.y += n.getData('vy') * dt;
+			if (n.x < -n.radius) n.x = width + n.radius;
+			if (n.y < -n.radius) n.y = height + n.radius;
+			if (n.y > height + n.radius) n.y = -n.radius;
+		}
+		for (const a of this.ambient) {
+			a.x += a.getData('vx') * dt;
+			a.y += a.getData('vy') * dt;
+			if (a.x < -40) {
+				a.x = width + 40;
+				a.y = Phaser.Math.Between(80, height - 120);
+			}
+		}
+	}
 }
 
 class MainScene extends Phaser.Scene {
@@ -188,9 +528,15 @@ class MainScene extends Phaser.Scene {
 		this.tripleUntil = 0;
 		this.shield = 0;
 
-		// Build world
+		// Build world — nebula sits behind starfield for parallax depth.
+		this.nebula = createNebula(this);
 		this.stars = createStarfield(this);
 		createTextures(this);
+
+		// Cinematic state
+		this.hitStopUntil = 0;
+		this.hitStopActive = false;
+		this.engineTrailTimer = 0;
 
 		this.player = this.physics.add.sprite(90, height / 2, 'player');
 		this.player.setDisplaySize(72, 42).setAngle(90).setCollideWorldBounds(true);
@@ -234,10 +580,22 @@ class MainScene extends Phaser.Scene {
 		});
 		this.bossFireTimer = null;
 		this.bossTween = null;
+		this.bossRadialTimer = null;
 
 		this.scale.on('resize', this.handleResize, this);
 		this.input.keyboard.on('keydown-P', () => this.togglePause());
 		this.input.keyboard.on('keydown-ESC', () => this.togglePause());
+		this.input.keyboard.on('keydown-M', () => {
+			const muted = getMusic(this)?.toggleMute();
+			this.showFloatingText(this.scale.width / 2, 60, muted ? 'MUSIC OFF' : 'MUSIC ON', '#fbbf24');
+		});
+
+		// Stop title-screen music, restart at gameplay intensity.
+		const music = getMusic(this);
+		music?.setIntensity(1.0);
+		music?.start();
+
+		this.cameras.main.fadeIn(400, 0, 0, 0);
 
 		this.startNextWave();
 	}
@@ -382,27 +740,99 @@ class MainScene extends Phaser.Scene {
 
 		const { width, height } = this.scale;
 		const isBoss = this.wave % 5 === 0;
-		const msg = isBoss ? `WAVE ${this.wave} — BOSS` : `WAVE ${this.wave}`;
-		const color = isBoss ? '#a855f7' : '#fbbf24';
-		const announce = this.add
-			.text(width / 2, height / 2, msg, {
-				fontFamily: 'monospace',
-				fontSize: '52px',
-				color
-			})
-			.setOrigin(0.5)
-			.setDepth(20);
-		this.tweens.add({
-			targets: announce,
-			alpha: { from: 1, to: 0 },
-			scale: { from: 0.6, to: 1.4 },
-			duration: 1500,
-			ease: 'Quad.easeOut',
-			onComplete: () => announce.destroy()
-		});
+		this.cinematicBanner(width, height, isBoss);
+		getMusic(this)?.setIntensity(1.0 + this.wave * 0.05);
 
 		if (isBoss) this.spawnBoss(this.wave);
 		else this.spawnFormation(this.wave);
+	}
+
+	cinematicBanner(width, height, isBoss) {
+		const msg = isBoss ? `WAVE ${this.wave}` : `WAVE ${this.wave}`;
+		const sub = isBoss ? '◆  BOSS  INCOMING  ◆' : 'INCOMING';
+		const color = isBoss ? '#a855f7' : '#fbbf24';
+		const stroke = isBoss ? '#581c87' : '#7c2d12';
+		const cy = height / 2;
+
+		// Twin horizontal bars sweep in, deliver text, sweep out.
+		const bar1 = this.add
+			.rectangle(width / 2, cy - 38, width * 1.5, 0, 0x000000, 0.6)
+			.setDepth(19);
+		const bar2 = this.add
+			.rectangle(width / 2, cy + 38, width * 1.5, 0, 0x000000, 0.6)
+			.setDepth(19);
+		this.tweens.add({
+			targets: [bar1, bar2],
+			height: { from: 0, to: 56 },
+			duration: 220,
+			ease: 'Quad.easeOut'
+		});
+
+		const title = this.add
+			.text(width / 2 + 600, cy - 12, msg, {
+				fontFamily: 'monospace',
+				fontSize: '54px',
+				color,
+				stroke,
+				strokeThickness: 6
+			})
+			.setOrigin(0.5)
+			.setDepth(20);
+		const subText = this.add
+			.text(width / 2 - 600, cy + 28, sub, {
+				fontFamily: 'monospace',
+				fontSize: '18px',
+				color: '#e4e4e7'
+			})
+			.setOrigin(0.5)
+			.setDepth(20);
+
+		this.tweens.add({
+			targets: title,
+			x: width / 2,
+			duration: 360,
+			ease: 'Cubic.easeOut'
+		});
+		this.tweens.add({
+			targets: subText,
+			x: width / 2,
+			duration: 360,
+			ease: 'Cubic.easeOut'
+		});
+
+		this.time.delayedCall(1100, () => {
+			this.tweens.add({
+				targets: title,
+				x: width / 2 - 800,
+				alpha: 0,
+				duration: 360,
+				ease: 'Cubic.easeIn',
+				onComplete: () => title.destroy()
+			});
+			this.tweens.add({
+				targets: subText,
+				x: width / 2 + 800,
+				alpha: 0,
+				duration: 360,
+				ease: 'Cubic.easeIn',
+				onComplete: () => subText.destroy()
+			});
+			this.tweens.add({
+				targets: [bar1, bar2],
+				height: 0,
+				duration: 260,
+				ease: 'Quad.easeIn',
+				onComplete: () => {
+					bar1.destroy();
+					bar2.destroy();
+				}
+			});
+		});
+
+		if (isBoss) {
+			this.cameras.main.flash(280, 168, 85, 247);
+			playSweep(this, 110, 55, 0.9, 'sawtooth', 0.06);
+		}
 	}
 
 	spawnFormation(waveNum) {
@@ -493,9 +923,34 @@ class MainScene extends Phaser.Scene {
 			b.body.setAllowGravity(false);
 			b.setVelocityX(680);
 		}
+		this.spawnMuzzleFlash(x, y);
+		// Subtle recoil pushback for game feel
+		this.player.x = Math.max(40, this.player.x - 2);
 		playSweep(this, 1100, 1700, 0.05, 'square', 0.025);
 		const delay = time < this.rapidUntil ? 100 : 280;
 		this.lastFired = time + delay;
+	}
+
+	spawnMuzzleFlash(x, y) {
+		const flash = this.add.ellipse(x, y, 36, 18, 0xfef3c7, 0.95).setDepth(6);
+		this.tweens.add({
+			targets: flash,
+			scaleX: { from: 1.0, to: 2.2 },
+			scaleY: { from: 1.0, to: 0.3 },
+			alpha: { from: 1, to: 0 },
+			duration: 110,
+			ease: 'Quad.easeOut',
+			onComplete: () => flash.destroy()
+		});
+		const core = this.add.circle(x, y, 6, 0x60a5fa, 0.9).setDepth(7);
+		this.tweens.add({
+			targets: core,
+			scale: { from: 1, to: 2.5 },
+			alpha: { from: 0.9, to: 0 },
+			duration: 160,
+			ease: 'Quad.easeOut',
+			onComplete: () => core.destroy()
+		});
 	}
 
 	invaderFire() {
@@ -640,6 +1095,11 @@ class MainScene extends Phaser.Scene {
 
 	// ---------- Combat resolution ----------
 
+	// Brief world freeze on impact — single biggest game-feel improvement.
+	hitStop(ms = 45) {
+		this.hitStopUntil = Math.max(this.hitStopUntil, this.time.now + ms);
+	}
+
 	hitInvader(bullet, invader) {
 		bullet.destroy();
 		if (!invader.active) return;
@@ -657,7 +1117,11 @@ class MainScene extends Phaser.Scene {
 				else if (t) invader.setTint(t);
 				else invader.clearTint();
 			});
-			if (invader.getData('type') === 'boss') this.updateBossHpBar(invader);
+			if (invader.getData('type') === 'boss') {
+				this.updateBossHpBar(invader);
+				this.checkBossPhase(invader);
+				this.hitStop(20);
+			}
 			playTone(this, 540, 0.05, 'square', 0.025);
 			return;
 		}
@@ -679,7 +1143,14 @@ class MainScene extends Phaser.Scene {
 		const type = invader.getData('type');
 		const burstCount = type === 'boss' ? 40 : type === 'tank' ? 18 : 10;
 		this.spawnParticles(invader.x, invader.y, burstColor, burstCount);
+		this.spawnShockwave(invader.x, invader.y, type === 'boss' ? 220 : type === 'tank' ? 120 : 70, burstColor);
 		playNoise(this, type === 'boss' ? 0.4 : 0.1, 0.06);
+
+		// Juice — hit-stop and a small camera kick scaled by combo.
+		const stopMs = type === 'boss' ? 120 : type === 'tank' ? 60 : 35 + Math.min(this.combo, 5) * 4;
+		this.hitStop(stopMs);
+		const shakeAmt = type === 'boss' ? 0.014 : 0.004 + Math.min(this.combo, 5) * 0.0015;
+		this.cameras.main.shake(80, shakeAmt);
 
 		if (type === 'boss' || Math.random() < POWERUP_DROP_CHANCE) this.spawnPowerup(invader.x, invader.y);
 
@@ -693,11 +1164,21 @@ class MainScene extends Phaser.Scene {
 			this.bossLabel.setVisible(false);
 			this.bossFireTimer?.remove();
 			this.bossFireTimer = null;
+			this.bossRadialTimer?.remove();
+			this.bossRadialTimer = null;
 			this.bossTween?.stop();
 			this.bossTween = null;
-			this.cameras.main.shake(400, 0.018);
-			this.cameras.main.flash(300, 200, 100, 255);
-			this.time.delayedCall(1500, () => this.startNextWave());
+			this.cameras.main.shake(500, 0.022);
+			this.cameras.main.flash(380, 200, 100, 255);
+			this.hitStop(180);
+			// Cinematic kill — chain of expanding rings
+			for (let i = 0; i < 4; i++) {
+				this.time.delayedCall(i * 120, () => {
+					this.spawnShockwave(invader.x, invader.y, 240 + i * 50, [0xa855f7, 0xef4444, 0xfbbf24, 0xffffff][i]);
+					this.spawnParticles(invader.x, invader.y, 0xfde047, 18);
+				});
+			}
+			this.time.delayedCall(1800, () => this.startNextWave());
 			return;
 		}
 
@@ -826,6 +1307,100 @@ class MainScene extends Phaser.Scene {
 			duration: 720,
 			ease: 'Quad.easeOut',
 			onComplete: () => t.destroy()
+		});
+	}
+
+	// Expanding ring — sells the impact at almost zero cost.
+	spawnShockwave(x, y, maxR = 80, color = 0xffffff) {
+		const ring = this.add
+			.circle(x, y, 6, 0x000000, 0)
+			.setStrokeStyle(3, color, 0.9)
+			.setDepth(7);
+		this.tweens.add({
+			targets: ring,
+			radius: maxR,
+			alpha: { from: 0.9, to: 0 },
+			duration: 380,
+			ease: 'Quad.easeOut',
+			onUpdate: () => ring.setRadius(ring.radius),
+			onComplete: () => ring.destroy()
+		});
+	}
+
+	// Cheap engine trail — small fading rectangles behind the player.
+	emitEngineTrail(time) {
+		if (time < this.engineTrailTimer) return;
+		this.engineTrailTimer = time + 32;
+		const x = this.player.x - 28;
+		const y = this.player.y;
+		const trail = this.add
+			.rectangle(x, y, 14, 4, 0x60a5fa, 0.85)
+			.setDepth(2);
+		this.tweens.add({
+			targets: trail,
+			scaleX: { from: 1, to: 2.5 },
+			alpha: { from: 0.85, to: 0 },
+			x: x - 30,
+			duration: 280,
+			ease: 'Quad.easeOut',
+			onComplete: () => trail.destroy()
+		});
+		// hot core
+		const core = this.add.circle(x, y, 3, 0xfde047, 0.9).setDepth(3);
+		this.tweens.add({
+			targets: core,
+			scale: { from: 1, to: 0 },
+			alpha: { from: 0.9, to: 0 },
+			x: x - 14,
+			duration: 200,
+			onComplete: () => core.destroy()
+		});
+	}
+
+	// Boss enrages at 50% HP — faster fire, brighter tint, periodic radial burst.
+	checkBossPhase(boss) {
+		if (boss.getData('phase2')) return;
+		const pct = boss.getData('hp') / boss.getData('maxHp');
+		if (pct > 0.5) return;
+		boss.setData('phase2', true);
+		boss.setData('originalTint', 0xef4444);
+		boss.setTint(0xef4444);
+		this.bossHpBar.fillColor = 0xef4444;
+		this.cameras.main.flash(220, 220, 40, 40);
+		this.cameras.main.shake(220, 0.012);
+		const warn = this.add
+			.text(this.scale.width / 2, this.scale.height / 2 - 100, 'BOSS ENRAGED', {
+				fontFamily: 'monospace',
+				fontSize: '36px',
+				color: '#ef4444',
+				stroke: '#7f1d1d',
+				strokeThickness: 4
+			})
+			.setOrigin(0.5)
+			.setDepth(25);
+		this.tweens.add({
+			targets: warn,
+			alpha: { from: 1, to: 0 },
+			scale: { from: 0.8, to: 1.4 },
+			duration: 1200,
+			ease: 'Quad.easeOut',
+			onComplete: () => warn.destroy()
+		});
+		if (this.bossFireTimer) this.bossFireTimer.delay = 480;
+		// Radial spray every 1.4s during phase 2
+		this.bossRadialTimer = this.time.addEvent({
+			delay: 1400,
+			loop: true,
+			callback: () => {
+				if (!boss.active || this.isGameOver || this.timeStopped || this.isPaused) return;
+				for (let i = 0; i < 14; i++) {
+					const ang = (i / 14) * Math.PI * 2;
+					const b = this.invaderBullets.create(boss.x, boss.y, 'sniperBullet');
+					b.body.setAllowGravity(false);
+					b.setVelocity(Math.cos(ang) * 220, Math.sin(ang) * 220);
+				}
+				playNoise(this, 0.18, 0.05);
+			}
 		});
 	}
 
@@ -1087,9 +1662,58 @@ class MainScene extends Phaser.Scene {
 		this.saveHighScore();
 		this.fireTimer.remove();
 		this.bossFireTimer?.remove();
+		this.bossRadialTimer?.remove();
 		this.bossTween?.stop();
-		this.physics.pause();
-		this.endText('GAME OVER', '#ef4444');
+
+		// Cinematic death — chained explosions, camera zoom-in, slow-mo, then
+		// fade music and reveal the end screen.
+		const px = this.player.x;
+		const py = this.player.y;
+		this.spawnParticles(px, py, 0xfde047, 22);
+		this.spawnShockwave(px, py, 140, 0xfbbf24);
+		this.cameras.main.shake(400, 0.018);
+		this.cameras.main.flash(220, 255, 240, 200);
+		playNoise(this, 0.35, 0.08);
+
+		// Freeze the world and zoom on the player for ~600ms before settling.
+		this.physics.world.pause();
+		this.cameras.main.zoomTo(1.35, 550, 'Sine.easeOut');
+		this.cameras.main.pan(px, py, 550, 'Sine.easeOut');
+
+		for (let i = 0; i < 5; i++) {
+			this.time.delayedCall(120 + i * 90, () => {
+				this.spawnParticles(
+					px + Phaser.Math.Between(-30, 30),
+					py + Phaser.Math.Between(-20, 20),
+					Phaser.Utils.Array.GetRandom([0xfde047, 0xef4444, 0xfbbf24, 0xffffff]),
+					12
+				);
+				this.spawnShockwave(px, py, 100 + i * 40, 0xfbbf24);
+				this.cameras.main.shake(80, 0.008);
+			});
+		}
+
+		// Make the wrecked ship blink out
+		this.player.setTint(0xff6b6b);
+		this.tweens.add({
+			targets: this.player,
+			alpha: { from: 1, to: 0 },
+			scale: { from: 1, to: 0.5 },
+			angle: '+=45',
+			duration: 800,
+			ease: 'Quad.easeIn'
+		});
+
+		// Fade music
+		getMusic(this)?.stop();
+
+		this.time.delayedCall(1100, () => {
+			this.cameras.main.zoomTo(1, 350, 'Sine.easeInOut');
+			const { width, height } = this.scale;
+			this.cameras.main.pan(width / 2, height / 2, 350, 'Sine.easeInOut');
+			this.physics.pause();
+			this.endText('GAME OVER', '#ef4444');
+		});
 	}
 
 	togglePause() {
@@ -1134,6 +1758,28 @@ class MainScene extends Phaser.Scene {
 
 		const { width, height } = this.scale;
 		const delta = this.game.loop.delta / 1000;
+
+		// Hit-stop — pause world physics very briefly on big impacts.
+		const inHitStop = time < this.hitStopUntil;
+		if (inHitStop && !this.hitStopActive) {
+			this.physics.pause();
+			this.hitStopActive = true;
+		} else if (!inHitStop && this.hitStopActive) {
+			this.physics.resume();
+			this.hitStopActive = false;
+		}
+
+		// Nebula drift
+		for (const n of this.nebula) {
+			n.x += n.getData('vx') * delta;
+			n.y += n.getData('vy') * delta;
+			if (n.x < -n.radius) n.x = width + n.radius;
+			if (n.y < -n.radius) n.y = height + n.radius;
+			else if (n.y > height + n.radius) n.y = -n.radius;
+		}
+
+		// Engine trail
+		this.emitEngineTrail(time);
 
 		// Parallax starfield
 		for (const s of this.stars) {
@@ -1257,7 +1903,7 @@ export function startGame(parent) {
 			default: 'arcade',
 			arcade: { gravity: { y: 0 }, debug: false }
 		},
-		scene: [MainScene]
+		scene: [TitleScene, MainScene]
 	};
 
 	const game = new Phaser.Game(config);

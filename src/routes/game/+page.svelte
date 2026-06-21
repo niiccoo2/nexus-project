@@ -421,6 +421,9 @@
 
 <div class="game" bind:this={container}></div>
 
+<!-- Post-processing overlay: CRT scanlines + vignette + subtle chromatic edges. -->
+<div class="post-fx" aria-hidden="true"></div>
+
 <div class="camera-cutoff" class:active={handVisible}>
 	<video class="camera-video" bind:this={cameraEl} autoplay muted playsinline></video>
 	<canvas class="camera-overlay" bind:this={overlayEl}></canvas>
@@ -462,6 +465,51 @@
 		inset: 0;
 		width: 100vw;
 		height: 100vh;
+	}
+
+	/* Layered post-FX — pointer-events: none so the canvas still catches input. */
+	.post-fx {
+		position: fixed;
+		inset: 0;
+		pointer-events: none;
+		z-index: 5;
+		background:
+			/* scanlines */
+			repeating-linear-gradient(
+				to bottom,
+				rgba(0, 0, 0, 0.18) 0px,
+				rgba(0, 0, 0, 0.18) 1px,
+				transparent 2px,
+				transparent 3px
+			),
+			/* vignette */
+			radial-gradient(
+				ellipse at center,
+				transparent 50%,
+				rgba(0, 0, 0, 0.45) 90%,
+				rgba(0, 0, 0, 0.75) 100%
+			);
+		mix-blend-mode: multiply;
+	}
+	.post-fx::after {
+		/* subtle blue/red chromatic glow at the edges */
+		content: '';
+		position: absolute;
+		inset: 0;
+		background:
+			radial-gradient(ellipse 70% 60% at 20% 50%, rgba(96, 165, 250, 0.08), transparent 60%),
+			radial-gradient(ellipse 70% 60% at 80% 50%, rgba(239, 68, 68, 0.06), transparent 60%);
+		mix-blend-mode: screen;
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.post-fx {
+			background:
+				radial-gradient(
+					ellipse at center,
+					transparent 60%,
+					rgba(0, 0, 0, 0.5) 100%
+				);
+		}
 	}
 
 	.camera-cutoff {
