@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import heartUrl from '../../assets/sprites/heart.png';
 import redShipUrl from '../../assets/sprites/red_spaceship.png';
 import whiteShipUrl from '../../assets/sprites/white_spaceship.png';
+import { addEntry, getLeaderboard, qualifies } from './leaderboard.js';
 
 const COLORS = {
 	playerBullet: 0x60a5fa,
@@ -29,6 +30,13 @@ const POWERUP_DURATION = 8000;
 
 const COMBO_DECAY = 2500;
 const HIGH_SCORE_KEY = 'spaceInvadersHighScoreV2';
+
+function nextLetter(letter, dir) {
+	const code = letter.charCodeAt(0);
+	const A = 65;
+	const offset = ((code - A + dir) % 26 + 26) % 26;
+	return String.fromCharCode(A + offset);
+}
 
 function weightedPick(weights) {
 	const keys = Object.keys(weights);
@@ -844,40 +852,233 @@ class MainScene extends Phaser.Scene {
 
 	endText(message, color) {
 		const { width, height } = this.scale;
-		this.add
-			.text(width / 2, height / 2 - 50, message, {
+		this.endLayer = this.add.container(0, 0).setDepth(20);
+
+		const title = this.add
+			.text(width / 2, height / 2 - 220, message, {
 				fontFamily: 'monospace',
 				fontSize: '60px',
 				color
 			})
-			.setOrigin(0.5)
-			.setDepth(20);
-		this.add
-			.text(width / 2, height / 2 + 8, `Score: ${this.score}`, {
+			.setOrigin(0.5);
+		const scoreText = this.add
+			.text(width / 2, height / 2 - 160, `Score: ${this.score}   Wave: ${this.wave}`, {
 				fontFamily: 'monospace',
-				fontSize: '24px',
+				fontSize: '22px',
 				color: COLORS.text
 			})
-			.setOrigin(0.5)
-			.setDepth(20);
-		this.add
-			.text(width / 2, height / 2 + 38, `Best: ${this.highScore}`, {
+			.setOrigin(0.5);
+		this.endLayer.add([title, scoreText]);
+
+		const qualifiesForBoard = qualifies(this.score);
+
+		if (qualifiesForBoard) {
+			this.showInitialEntry(width, height);
+		} else {
+			this.renderLeaderboardPanel(width, height, null);
+			this.addRestartHint(width, height);
+		}
+	}
+
+	addRestartHint(width, height) {
+		const hint = this.add
+			.text(width / 2, height / 2 + 240, 'Press R to play again', {
 				fontFamily: 'monospace',
 				fontSize: '18px',
 				color: '#9ca3af'
 			})
-			.setOrigin(0.5)
-			.setDepth(20);
-		this.add
-			.text(width / 2, height / 2 + 90, 'Press R to play again', {
-				fontFamily: 'monospace',
-				fontSize: '20px',
-				color: COLORS.text
-			})
-			.setOrigin(0.5)
-			.setDepth(20);
-
+			.setOrigin(0.5);
+		this.endLayer.add(hint);
 		this.input.keyboard.once('keydown-R', () => this.scene.restart());
+	}
+
+	// Arcade-style three-letter initial entry. Left/Right or A-Z to set, Enter to submit.
+	showInitialEntry(width, height) {
+		const prompt = this.add
+			.text(width / 2, height / 2 - 110, 'NEW HIGH SCORE  —  ENTER INITIALS', {
+				fontFamily: 'monospace',
+				fontSize: '18px',
+				color: '#fbbf24'
+			})
+			.setOrigin(0.5);
+		this.endLayer.add(prompt);
+
+		const initials = ['A', 'A', 'A'];
+		let cursor = 0;
+
+		const slotX = [width / 2 - 50, width / 2, width / 2 + 50];
+		const slots = slotX.map((x, i) =>
+			this.add
+				.text(x, height / 2 - 60, initials[i], {
+					fontFamily: 'monospace',
+					fontSize: '52px',
+					color: '#e4e4e7'
+				})
+				.setOrigin(0.5)
+		);
+		const caret = this.add
+			.rectangle(slotX[0], height / 2 - 25, 36, 4, 0x22d3ee)
+			.setOrigin(0.5);
+		this.tweens.add({
+			targets: caret,
+			alpha: { from: 1, to: 0.15 },
+			duration: 450,
+			yoyo: true,
+			repeat: -1
+		});
+
+		const hint = this.add
+			.text(
+				width / 2,
+				height / 2 - 5,
+				'A-Z type   ←/→ move   ↑/↓ change   Enter submit',
+				{
+					fontFamily: 'monospace',
+					fontSize: '13px',
+					color: '#6b7280'
+				}
+			)
+			.setOrigin(0.5);
+		this.endLayer.add([...slots, caret, hint]);
+
+		const updateView = () => {
+			slots.forEach((s, i) => s.setText(initials[i]));
+			caret.x = slotX[cursor];
+			slots.forEach((s, i) =>
+				s.setColor(i === cursor ? '#22d3ee' : '#e4e4e7')
+			);
+		};
+		updateView();
+
+		const letterHandler = (ev) => {
+			const k = ev.key;
+			if (k === 'Enter') {
+				submit();
+				return;
+			}
+			if (k === 'ArrowLeft') {
+				cursor = (cursor + 2) % 3;
+				updateView();
+				return;
+			}
+			if (k === 'ArrowRight' || k === 'Tab') {
+				ev.preventDefault?.();
+				cursor = (cursor + 1) % 3;
+				updateView();
+				return;
+			}
+			if (k === 'ArrowUp') {
+				initials[cursor] = nextLetter(initials[cursor], 1);
+				updateView();
+				return;
+			}
+			if (k === 'ArrowDown') {
+				initials[cursor] = nextLetter(initials[cursor], -1);
+				updateView();
+				return;
+			}
+			if (k === 'Backspace') {
+				initials[cursor] = 'A';
+				cursor = Math.max(0, cursor - 1);
+				updateView();
+				return;
+			}
+			if (/^[a-zA-Z]$/.test(k)) {
+				initials[cursor] = k.toUpperCase();
+				if (cursor < 2) cursor += 1;
+				else submit();
+				updateView();
+			}
+		};
+		this.input.keyboard.on('keydown', letterHandler);
+
+		const submit = () => {
+			this.input.keyboard.off('keydown', letterHandler);
+			caret.destroy();
+			const entry = {
+				name: initials.join(''),
+				score: this.score,
+				wave: this.wave,
+				date: Date.now()
+			};
+			addEntry(entry);
+			this.renderLeaderboardPanel(this.scale.width, this.scale.height, entry);
+			this.addRestartHint(this.scale.width, this.scale.height);
+		};
+	}
+
+	renderLeaderboardPanel(width, height, highlight) {
+		const board = getLeaderboard();
+		const panelW = 460;
+		const panelH = 280;
+		const x = width / 2;
+		const y = height / 2 + 70;
+
+		const bg = this.add
+			.rectangle(x, y, panelW, panelH, 0x0b0b13, 0.85)
+			.setStrokeStyle(1, 0x22d3ee, 0.5)
+			.setOrigin(0.5);
+		const title = this.add
+			.text(x, y - panelH / 2 + 22, 'LEADERBOARD', {
+				fontFamily: 'monospace',
+				fontSize: '16px',
+				color: '#22d3ee'
+			})
+			.setOrigin(0.5);
+		const header = this.add
+			.text(x - panelW / 2 + 18, y - panelH / 2 + 48, '#   NAME   SCORE     WAVE', {
+				fontFamily: 'monospace',
+				fontSize: '13px',
+				color: '#6b7280'
+			})
+			.setOrigin(0, 0.5);
+		this.endLayer.add([bg, title, header]);
+
+		if (board.length === 0) {
+			const empty = this.add
+				.text(x, y, 'No entries yet — be the first.', {
+					fontFamily: 'monospace',
+					fontSize: '14px',
+					color: '#6b7280'
+				})
+				.setOrigin(0.5);
+			this.endLayer.add(empty);
+			return;
+		}
+
+		const rowH = 20;
+		const startY = y - panelH / 2 + 76;
+		board.forEach((e, i) => {
+			const isMe =
+				highlight &&
+				e.name === highlight.name &&
+				e.score === highlight.score &&
+				e.date === highlight.date;
+			const color = isMe ? '#fbbf24' : i === 0 ? '#22d3ee' : '#e4e4e7';
+			const rank = String(i + 1).padStart(2, ' ');
+			const name = e.name.padEnd(4, ' ');
+			const score = String(e.score).padStart(7, ' ');
+			const wave = String(e.wave).padStart(4, ' ');
+			const row = this.add
+				.text(
+					x - panelW / 2 + 18,
+					startY + i * rowH,
+					`${rank}  ${name}  ${score}     ${wave}`,
+					{ fontFamily: 'monospace', fontSize: '14px', color }
+				)
+				.setOrigin(0, 0.5);
+			this.endLayer.add(row);
+			if (isMe) {
+				const star = this.add
+					.text(x + panelW / 2 - 24, startY + i * rowH, '★', {
+						fontFamily: 'monospace',
+						fontSize: '14px',
+						color: '#fbbf24'
+					})
+					.setOrigin(0.5);
+				this.endLayer.add(star);
+			}
+		});
 	}
 
 	gameOver() {
