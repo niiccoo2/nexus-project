@@ -7,48 +7,75 @@
 	let cameraEl;
 	/** @type {HTMLCanvasElement} */
 	let overlayEl;
-	/** @type {import('phaser').Game & { controls?: any } | undefined} */
+	/** @type {(import('phaser').Game & { controls?: any }) | undefined} */
 	let game;
 	let errorMsg = '';
 	let trackerStatus = 'Starting…';
 	let handVisible = false;
 	let lastGesture = '';
 	let lastGestureAt = 0;
+	let fps = 0;
+
+	/** @typedef {{ x:number, y:number, z?:number }} LM */
 
 	// Skeleton connections — pairs of landmark indices.
 	const HAND_CONNECTIONS = [
-		[0, 1], [1, 2], [2, 3], [3, 4], // thumb
-		[0, 5], [5, 6], [6, 7], [7, 8], // index
-		[5, 9], [9, 10], [10, 11], [11, 12], // middle
-		[9, 13], [13, 14], [14, 15], [15, 16], // ring
-		[13, 17], [17, 18], [18, 19], [19, 20], // pinky
-		[0, 17] // palm base
+		[0, 1], [1, 2], [2, 3], [3, 4],
+		[0, 5], [5, 6], [6, 7], [7, 8],
+		[5, 9], [9, 10], [10, 11], [11, 12],
+		[9, 13], [13, 14], [14, 15], [15, 16],
+		[13, 17], [17, 18], [18, 19], [19, 20],
+		[0, 17]
 	];
 
+	// Map only the middle portion of the camera to the game height so the
+	// player doesn't have to reach the edge of the frame to hit a corner.
+	const Y_TOP = 0.18;
+	const Y_BOTTOM = 0.82;
+
+	// Pinch hysteresis — different enter/exit thresholds avoid flicker at the boundary.
+	const PINCH_ENTER = 0.42;
+	const PINCH_EXIT = 0.6;
+
+	// One-shot gestures must hold for N frames before firing — kills false positives.
+	const STABILITY_FRAMES = 3;
+	const ONE_SHOT_COOLDOWN = 650;
+
+	/**
+	 * @param {LM} a
+	 * @param {LM} b
+	 */
 	function dist(a, b) {
 		const dx = a.x - b.x;
 		const dy = a.y - b.y;
 		return Math.sqrt(dx * dx + dy * dy);
 	}
 
-	// Robust orientation-independent finger check: a finger is extended when
-	// its tip is meaningfully farther from the wrist than the PIP joint.
+	/**
+	 * Orientation-independent "is this finger extended?" — tip farther
+	 * from the wrist than the PIP joint by a comfortable margin.
+	 * @param {LM[]} lm @param {number} pip @param {number} tip
+	 */
 	function fingerExtended(lm, pip, tip) {
-		const wrist = lm[0];
-		return dist(wrist, lm[tip]) > dist(wrist, lm[pip]) * 1.1;
+		return dist(lm[0], lm[tip]) > dist(lm[0], lm[pip]) * 1.1;
 	}
 
+	/** @param {LM[]} lm */
 	function countFingers(lm) {
 		let n = 0;
 		if (fingerExtended(lm, 6, 8)) n++;
 		if (fingerExtended(lm, 10, 12)) n++;
 		if (fingerExtended(lm, 14, 16)) n++;
 		if (fingerExtended(lm, 18, 20)) n++;
-		// Thumb: tip vs IP, weighted lower (thumb extension is noisy)
 		if (dist(lm[0], lm[4]) > dist(lm[0], lm[3]) * 1.15) n++;
 		return n;
 	}
 
+	/**
+	 * @param {CanvasRenderingContext2D} ctx
+	 * @param {LM[]} lm
+	 * @param {number} w @param {number} h @param {string} color
+	 */
 	function drawHand(ctx, lm, w, h, color) {
 		ctx.strokeStyle = color;
 		ctx.lineWidth = 2;
@@ -58,7 +85,6 @@
 			ctx.lineTo(lm[b].x * w, lm[b].y * h);
 		}
 		ctx.stroke();
-
 		ctx.fillStyle = color;
 		for (const p of lm) {
 			ctx.beginPath();
@@ -67,6 +93,54 @@
 		}
 	}
 
+	/**
+	 * 1€ filter — adaptive low-pass that follows fast motion accurately
+	 * while killing tremor at rest. Far better than a fixed-α EMA for
+	 * pointer-style hand control.
+	 */
+	class OneEuroFilter {
+		constructor(minCutoff = 1.4, beta = 0.04, dCutoff = 1.0) {
+			this.minCutoff = minCutoff;
+			this.beta = beta;
+			this.dCutoff = dCutoff;
+			/** @type {number | null} */
+			this.xPrev = null;
+			this.dxPrev = 0;
+			/** @type {number | null} */
+			this.tPrev = null;
+		}
+		/** @param {number} cutoff @param {number} dt */
+		alpha(cutoff, dt) {
+			const tau = 1 / (2 * Math.PI * cutoff);
+			return 1 / (1 + tau / dt);
+		}
+		/** @param {number} x @param {number} t */
+		filter(x, t) {
+			if (this.tPrev === null || this.xPrev === null) {
+				this.tPrev = t;
+				this.xPrev = x;
+				return x;
+			}
+			const dt = Math.max(0.001, (t - this.tPrev) / 1000);
+			const dx = (x - this.xPrev) / dt;
+			const aD = this.alpha(this.dCutoff, dt);
+			const dxHat = aD * dx + (1 - aD) * this.dxPrev;
+			const cutoff = this.minCutoff + this.beta * Math.abs(dxHat);
+			const a = this.alpha(cutoff, dt);
+			const xHat = a * x + (1 - a) * this.xPrev;
+			this.xPrev = xHat;
+			this.dxPrev = dxHat;
+			this.tPrev = t;
+			return xHat;
+		}
+		reset() {
+			this.xPrev = null;
+			this.dxPrev = 0;
+			this.tPrev = null;
+		}
+	}
+
+	/** @param {string} label */
 	function setGesture(label) {
 		lastGesture = label;
 		lastGestureAt = performance.now();
@@ -79,6 +153,8 @@
 		/** @type {MediaStream | null} */
 		let stream = null;
 		let rafId = 0;
+		let vfcId = 0;
+		let docHidden = false;
 
 		const onError = (/** @type {ErrorEvent} */ e) => {
 			errorMsg = (e.error?.stack || e.message || String(e.error)) ?? 'Unknown error';
@@ -86,8 +162,12 @@
 		const onRejection = (/** @type {PromiseRejectionEvent} */ e) => {
 			errorMsg = e.reason?.stack || String(e.reason);
 		};
+		const onVis = () => {
+			docHidden = document.hidden;
+		};
 		window.addEventListener('error', onError);
 		window.addEventListener('unhandledrejection', onRejection);
+		document.addEventListener('visibilitychange', onVis);
 
 		(async () => {
 			try {
@@ -99,11 +179,17 @@
 				return;
 			}
 
-			// Camera — failure here is non-fatal; keyboard still works.
 			try {
 				trackerStatus = 'Requesting camera…';
+				// Lower resolution = faster inference + lower bandwidth, accuracy
+				// difference is negligible for landmark detection at this distance.
 				stream = await navigator.mediaDevices.getUserMedia({
-					video: { width: 640, height: 480, facingMode: 'user' },
+					video: {
+						width: { ideal: 480 },
+						height: { ideal: 360 },
+						frameRate: { ideal: 30, max: 60 },
+						facingMode: 'user'
+					},
 					audio: false
 				});
 				if (destroyed) {
@@ -132,7 +218,10 @@
 						delegate: 'GPU'
 					},
 					runningMode: 'VIDEO',
-					numHands: 1
+					numHands: 1,
+					minHandDetectionConfidence: 0.6,
+					minHandPresenceConfidence: 0.6,
+					minTrackingConfidence: 0.55
 				});
 				if (destroyed) return;
 				trackerStatus = 'Show your hand to the camera';
@@ -142,16 +231,23 @@
 			}
 
 			const ctx = overlayEl.getContext('2d');
-			let smoothedY = 0.5;
+			if (!ctx) return;
+
+			const yFilter = new OneEuroFilter(1.4, 0.045, 1.0);
+			let pinchActive = false;
+			let fistFrames = 0;
+			let openFrames = 0;
 			let lastFistAt = 0;
 			let lastOpenAt = 0;
-			const ONE_SHOT_COOLDOWN = 700; // ms between same-gesture re-fires
-			let lastDetectionTs = -1;
+			let lastTs = 0;
+			let lastInferenceTs = -1;
+			let frameCount = 0;
+			let fpsAccum = 0;
+			let missingFrames = 0;
 
-			const loop = () => {
+			/** @param {DOMHighResTimeStamp} ts */
+			const processFrame = (ts) => {
 				if (destroyed) return;
-				rafId = requestAnimationFrame(loop);
-
 				const vw = cameraEl.videoWidth;
 				const vh = cameraEl.videoHeight;
 				if (!vw || !vh || cameraEl.readyState < 2) return;
@@ -160,9 +256,9 @@
 				if (overlayEl.height !== vh) overlayEl.height = vh;
 				ctx.clearRect(0, 0, vw, vh);
 
-				const ts = performance.now();
-				if (ts === lastDetectionTs) return;
-				lastDetectionTs = ts;
+				// Don't re-run inference on the same frame timestamp.
+				if (ts === lastInferenceTs) return;
+				lastInferenceTs = ts;
 
 				let result;
 				try {
@@ -171,53 +267,81 @@
 					return;
 				}
 
+				if (lastTs) {
+					const dt = ts - lastTs;
+					fpsAccum += 1000 / Math.max(1, dt);
+					frameCount++;
+					if (frameCount >= 15) {
+						fps = Math.round(fpsAccum / frameCount);
+						frameCount = 0;
+						fpsAccum = 0;
+					}
+				}
+				lastTs = ts;
+
 				const ctrl = game?.controls;
 				if (!ctrl) return;
 
 				if (result?.landmarks?.length) {
+					missingFrames = 0;
 					handVisible = true;
 					const lm = result.landmarks[0];
 
-					// Use middle MCP (landmark 9) as palm centre — more stable than tips.
-					const palmY = lm[9].y;
-					smoothedY = smoothedY * 0.55 + palmY * 0.45;
-					ctrl.targetY = smoothedY;
+					// Y: use middle MCP as palm centre; filter, then remap from the
+					// usable middle band of the camera to the full game height.
+					const rawY = lm[9].y;
+					const filteredY = yFilter.filter(rawY, ts);
+					const remapped = (filteredY - Y_TOP) / (Y_BOTTOM - Y_TOP);
+					ctrl.targetY = Math.min(1, Math.max(0, remapped));
 
-					// Pinch: thumb tip to index tip distance, normalised by hand span.
+					// Pinch — normalised by hand span, with hysteresis.
 					const handSpan = dist(lm[0], lm[9]) || 0.1;
-					const pinch = dist(lm[4], lm[8]) / handSpan;
-					const isPinch = pinch < 0.55;
-					ctrl.shoot = isPinch;
-
-					const fingers = countFingers(lm);
-					const now = ts;
-
-					// Closed fist (0–1 fingers showing) → time stop
-					if (fingers <= 1 && !isPinch && now - lastFistAt > ONE_SHOT_COOLDOWN) {
-						ctrl.timeStop = true;
-						lastFistAt = now;
-						setGesture('✊  Time Stop');
+					const pinchRatio = dist(lm[4], lm[8]) / handSpan;
+					if (pinchActive) {
+						if (pinchRatio > PINCH_EXIT) pinchActive = false;
+					} else {
+						if (pinchRatio < PINCH_ENTER) pinchActive = true;
 					}
-					// Open palm (4–5 fingers extended) → dash
-					else if (fingers >= 4 && now - lastOpenAt > ONE_SHOT_COOLDOWN) {
+					ctrl.shoot = pinchActive;
+
+					// Static one-shots — must hold for STABILITY_FRAMES.
+					const fingers = countFingers(lm);
+					const isFist = fingers <= 1 && !pinchActive;
+					const isOpen = fingers >= 4;
+
+					if (isFist) fistFrames++;
+					else fistFrames = 0;
+					if (isOpen) openFrames++;
+					else openFrames = 0;
+
+					if (
+						fistFrames === STABILITY_FRAMES &&
+						ts - lastFistAt > ONE_SHOT_COOLDOWN
+					) {
+						ctrl.timeStop = true;
+						lastFistAt = ts;
+						setGesture('✊  Time Stop');
+					} else if (
+						openFrames === STABILITY_FRAMES &&
+						ts - lastOpenAt > ONE_SHOT_COOLDOWN
+					) {
 						ctrl.dash = true;
-						lastOpenAt = now;
+						lastOpenAt = ts;
 						setGesture('✋  Dash');
-					} else if (isPinch) {
+					} else if (pinchActive) {
 						setGesture('🤏  Shoot');
 					}
 
-					const skeletonColor = isPinch
+					const skeletonColor = pinchActive
 						? '#22d3ee'
-						: fingers <= 1
+						: isFist
 							? '#a78bfa'
-							: fingers >= 4
+							: isOpen
 								? '#fbbf24'
 								: '#60a5fa';
 					drawHand(ctx, lm, vw, vh, skeletonColor);
 
-					// Highlight pinch link
-					if (isPinch) {
+					if (pinchActive) {
 						ctx.strokeStyle = '#22d3ee';
 						ctx.lineWidth = 3;
 						ctx.beginPath();
@@ -226,19 +350,57 @@
 						ctx.stroke();
 					}
 				} else {
-					handVisible = false;
-					ctrl.targetY = null;
-					ctrl.shoot = false;
+					// Tolerate 3 missing frames before releasing — smooths over
+					// momentary detection drops without going jittery.
+					missingFrames++;
+					if (missingFrames > 3) {
+						if (handVisible) {
+							handVisible = false;
+							yFilter.reset();
+							pinchActive = false;
+							fistFrames = 0;
+							openFrames = 0;
+						}
+						ctrl.targetY = null;
+						ctrl.shoot = false;
+					}
 				}
 
 				if (ts - lastGestureAt > 1200) lastGesture = '';
 			};
-			loop();
+
+			// Prefer requestVideoFrameCallback — fires exactly when a new
+			// camera frame is ready (no duplicate inferences, no idle CPU
+			// when the camera is paused).
+			const supportsVFC = 'requestVideoFrameCallback' in cameraEl;
+			const schedule = () => {
+				if (destroyed) return;
+				if (docHidden) {
+					// Re-poll occasionally instead of burning RAFs while hidden.
+					setTimeout(schedule, 250);
+					return;
+				}
+				if (supportsVFC) {
+					vfcId = cameraEl.requestVideoFrameCallback((now) => {
+						processFrame(now);
+						schedule();
+					});
+				} else {
+					rafId = requestAnimationFrame((now) => {
+						processFrame(now);
+						schedule();
+					});
+				}
+			};
+			schedule();
 		})();
 
 		return () => {
 			destroyed = true;
 			if (rafId) cancelAnimationFrame(rafId);
+			if (vfcId && 'cancelVideoFrameCallback' in cameraEl) {
+				cameraEl.cancelVideoFrameCallback(vfcId);
+			}
 			try {
 				handLandmarker?.close();
 			} catch (_) {
@@ -247,6 +409,7 @@
 			stream?.getTracks().forEach((t) => t.stop());
 			window.removeEventListener('error', onError);
 			window.removeEventListener('unhandledrejection', onRejection);
+			document.removeEventListener('visibilitychange', onVis);
 			game?.destroy(true);
 		};
 	});
@@ -264,7 +427,7 @@
 
 	<div class="camera-status">
 		<span class="dot" class:on={handVisible}></span>
-		<span class="status-text">{handVisible ? 'Tracking' : trackerStatus}</span>
+		<span class="status-text">{handVisible ? `Tracking · ${fps} fps` : trackerStatus}</span>
 	</div>
 
 	{#if lastGesture}
