@@ -20,8 +20,11 @@
 	let shopCoins = 0;
 	/** @type {Record<string, number>} */
 	let shopUpgrades = {};
-	/** @type {Record<string, { costs: number[], label: string, color: string }>} */
-	let shopItems = {};
+	/** @type {Record<string, { cost: number, label: string, color: string, desc: string }>} */
+	let shopShipItems = {};
+	let shopShipBought = false;
+	/** @type {Record<string, { costs: number[], label: string, color: string, durations: number[], desc: string }>} */
+	let shopUpgradeItems = {};
 
 	function handleBuy(/** @type {string} */ type) {
 		game?.controls?.shopCallback?.buy(type);
@@ -193,12 +196,15 @@
 				game.events.on('shop:open', (/** @type {any} */ data) => {
 					shopCoins = data.coins;
 					shopUpgrades = { ...data.upgrades };
-					shopItems = data.items;
+					shopShipItems = data.shipShop;
+					shopShipBought = data.shipBought;
+					shopUpgradeItems = data.upgradeShop;
 					shopOpen = true;
 				});
 				game.events.on('shop:update', (/** @type {any} */ data) => {
 					shopCoins = data.coins;
 					shopUpgrades = { ...data.upgrades };
+					shopShipBought = data.shipBought;
 				});
 				game.events.on('shop:close', () => {
 					shopOpen = false;
@@ -485,35 +491,86 @@
 	<div class="shop-backdrop">
 		<div class="shop-panel">
 			<div class="shop-header">
-				<span class="shop-title">UPGRADE SHOP</span>
-				<span class="shop-coins">◈&nbsp;&nbsp;{shopCoins}</span>
+				<div class="shop-title-wrap">
+					<span class="shop-title">UPGRADE SHOP</span>
+				</div>
+				<div class="shop-coins">
+					<span class="coin-icon">◈</span>
+					<span class="coin-val">{shopCoins}</span>
+				</div>
 			</div>
-			<div class="shop-grid">
-				{#each Object.entries(shopItems) as [type, item]}
-					{@const level = shopUpgrades[type] ?? 0}
-					{@const maxed = level >= item.costs.length}
-					{@const cost = maxed ? null : item.costs[level]}
-					{@const canAfford = cost != null && shopCoins >= cost}
-					<div class="shop-item" class:maxed>
-						<div class="item-name" style="color: {item.color}">{item.label}</div>
-						<div class="item-levels">
-							{#each item.costs as _, i}
-								<span class="level-pip" class:filled={i < level}></span>
-							{/each}
+
+			<!-- Ship: one-time per wave -->
+			<div class="shop-section">
+				<div class="section-header">
+					<span class="section-label">SHIP</span>
+					<span class="section-badge wave-badge">ONE-TIME / WAVE</span>
+				</div>
+				<div class="ship-row">
+					{#each Object.entries(shopShipItems) as [type, item]}
+						{@const bought = type === 'size' ? shopShipBought : false}
+						{@const canAfford = !bought && shopCoins >= item.cost}
+						<div class="ship-card" class:bought>
+							<div class="ship-card-inner">
+								<div class="item-icon">🚀</div>
+								<div class="item-name" style="color:{item.color}">{item.label}</div>
+								<div class="item-desc">{item.desc}</div>
+							</div>
+							<button
+								class="buy-btn"
+								class:affordable={canAfford}
+								class:bought
+								disabled={bought || shopCoins < item.cost}
+								on:click={() => handleBuy(type)}
+							>
+								{bought ? '✓ EQUIPPED' : `◈  ${item.cost}`}
+							</button>
 						</div>
-						<button
-							class="buy-btn"
-							class:affordable={canAfford && !maxed}
-							disabled={maxed || !canAfford}
-							on:click={() => handleBuy(type)}
-						>
-							{maxed ? 'MAX' : `◈  ${cost}`}
-						</button>
-					</div>
-				{/each}
+					{/each}
+				</div>
 			</div>
+
+			<!-- Permanent upgrades -->
+			<div class="shop-section">
+				<div class="section-header">
+					<span class="section-label">UPGRADES</span>
+					<span class="section-badge perm-badge">PERMANENT</span>
+				</div>
+				<div class="upgrade-row">
+					{#each Object.entries(shopUpgradeItems) as [type, item]}
+						{@const level = shopUpgrades[type] ?? 0}
+						{@const maxed = level >= item.costs.length}
+						{@const cost = maxed ? null : item.costs[level]}
+						{@const nextDur = maxed ? null : item.durations[level]}
+						{@const canAfford = cost != null && shopCoins >= cost}
+						<div class="upgrade-card" class:maxed>
+							<div class="upgrade-top">
+								<span class="item-name" style="color:{item.color}">{item.label}</span>
+								<span class="item-dur" style="color:{item.color}">
+									{maxed ? `${item.durations[item.durations.length-1]/1000}s MAX` : level === 0 ? `→ ${nextDur/1000}s` : `${item.durations[level-1]/1000}s → ${nextDur/1000}s`}
+								</span>
+							</div>
+							<div class="item-desc">{item.desc}</div>
+							<div class="item-levels">
+								{#each item.costs as _, i}
+									<span class="level-pip" class:filled={i < level} style={i < level ? `background:${item.color};border-color:${item.color}` : ''}></span>
+								{/each}
+							</div>
+							<button
+								class="buy-btn"
+								class:affordable={canAfford && !maxed}
+								disabled={maxed || !canAfford}
+								on:click={() => handleBuy(type)}
+							>
+								{maxed ? 'MAX' : `◈  ${cost}`}
+							</button>
+						</div>
+					{/each}
+				</div>
+			</div>
+
 			<button class="continue-btn" on:click={handleCloseShop}>
-				▶&nbsp;&nbsp;NEXT WAVE
+				▶&nbsp; NEXT WAVE
 			</button>
 		</div>
 	</div>
@@ -752,139 +809,272 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		background: rgba(0, 0, 0, 0.55);
-		backdrop-filter: blur(16px);
-		-webkit-backdrop-filter: blur(16px);
+		background: rgba(0, 0, 10, 0.72);
+		backdrop-filter: blur(20px);
+		-webkit-backdrop-filter: blur(20px);
 	}
 
 	.shop-panel {
-		background: rgba(9, 9, 11, 0.94);
-		border: 1px solid rgba(228, 228, 231, 0.14);
-		border-radius: 16px;
-		padding: 32px 36px;
-		width: 560px;
-		max-width: 94vw;
+		background: linear-gradient(160deg, rgba(9, 9, 20, 0.98) 0%, rgba(6, 6, 15, 0.98) 100%);
+		border: 1px solid rgba(34, 211, 238, 0.22);
+		border-radius: 18px;
+		padding: 28px 30px 26px;
+		width: 520px;
+		max-width: 96vw;
 		box-shadow:
-			0 0 64px rgba(34, 211, 238, 0.1),
-			0 24px 56px rgba(0, 0, 0, 0.7);
+			0 0 0 1px rgba(34, 211, 238, 0.07),
+			0 0 80px rgba(34, 211, 238, 0.08),
+			0 28px 64px rgba(0, 0, 0, 0.85);
+		font-family: ui-monospace, 'JetBrains Mono', monospace;
 	}
 
 	.shop-header {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		margin-bottom: 28px;
+		margin-bottom: 22px;
+		padding-bottom: 16px;
+		border-bottom: 1px solid rgba(34, 211, 238, 0.12);
+	}
+
+	.shop-title-wrap {
+		display: flex;
+		align-items: center;
+		gap: 10px;
 	}
 
 	.shop-title {
-		font-family: ui-monospace, 'JetBrains Mono', monospace;
-		font-size: 20px;
+		font-size: 18px;
+		font-weight: bold;
 		color: #22d3ee;
-		letter-spacing: 0.1em;
+		letter-spacing: 0.14em;
+		text-shadow: 0 0 18px rgba(34, 211, 238, 0.5);
 	}
 
 	.shop-coins {
-		font-family: ui-monospace, 'JetBrains Mono', monospace;
-		font-size: 18px;
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		padding: 6px 14px;
+		background: rgba(251, 191, 36, 0.08);
+		border: 1px solid rgba(251, 191, 36, 0.28);
+		border-radius: 999px;
+	}
+
+	.coin-icon {
+		font-size: 14px;
 		color: #fbbf24;
 	}
 
-	.shop-grid {
-		display: grid;
-		grid-template-columns: repeat(5, 1fr);
-		gap: 10px;
-		margin-bottom: 24px;
+	.coin-val {
+		font-size: 17px;
+		color: #fbbf24;
+		font-weight: bold;
 	}
 
-	.shop-item {
+	/* Sections */
+	.shop-section {
+		margin-bottom: 20px;
+	}
+
+	.section-header {
 		display: flex;
-		flex-direction: column;
 		align-items: center;
 		gap: 10px;
-		padding: 14px 8px;
-		background: rgba(228, 228, 231, 0.04);
-		border: 1px solid rgba(228, 228, 231, 0.1);
-		border-radius: 10px;
-		text-align: center;
-		transition: border-color 0.2s;
+		margin-bottom: 12px;
 	}
 
-	.shop-item:not(.maxed):hover {
-		border-color: rgba(228, 228, 231, 0.24);
+	.section-label {
+		font-size: 11px;
+		letter-spacing: 0.15em;
+		color: #71717a;
+		font-weight: bold;
 	}
 
-	.shop-item.maxed {
-		opacity: 0.42;
+	.section-badge {
+		font-size: 9px;
+		letter-spacing: 0.1em;
+		padding: 2px 8px;
+		border-radius: 999px;
+		font-weight: bold;
+	}
+
+	.wave-badge {
+		color: #60a5fa;
+		background: rgba(96, 165, 250, 0.1);
+		border: 1px solid rgba(96, 165, 250, 0.25);
+	}
+
+	.perm-badge {
+		color: #a78bfa;
+		background: rgba(167, 139, 250, 0.1);
+		border: 1px solid rgba(167, 139, 250, 0.25);
+	}
+
+	/* Ship row */
+	.ship-row {
+		display: flex;
+		gap: 10px;
+	}
+
+	.ship-card {
+		flex: 1;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 14px;
+		padding: 14px 16px;
+		background: rgba(96, 165, 250, 0.04);
+		border: 1px solid rgba(96, 165, 250, 0.15);
+		border-radius: 12px;
+		transition: border-color 0.2s, background 0.2s;
+	}
+
+	.ship-card:not(.bought):hover {
+		border-color: rgba(96, 165, 250, 0.35);
+		background: rgba(96, 165, 250, 0.07);
+	}
+
+	.ship-card.bought {
+		border-color: rgba(96, 165, 250, 0.5);
+		background: rgba(96, 165, 250, 0.08);
+	}
+
+	.ship-card-inner {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+	}
+
+	.item-icon {
+		font-size: 22px;
+		line-height: 1;
+	}
+
+	/* Upgrade row */
+	.upgrade-row {
+		display: flex;
+		gap: 10px;
+	}
+
+	.upgrade-card {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		padding: 14px 14px;
+		background: rgba(167, 139, 250, 0.04);
+		border: 1px solid rgba(167, 139, 250, 0.15);
+		border-radius: 12px;
+		transition: border-color 0.2s, background 0.2s;
+	}
+
+	.upgrade-card:not(.maxed):hover {
+		border-color: rgba(167, 139, 250, 0.35);
+		background: rgba(167, 139, 250, 0.07);
+	}
+
+	.upgrade-card.maxed {
+		opacity: 0.5;
+	}
+
+	.upgrade-top {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 8px;
 	}
 
 	.item-name {
-		font-family: ui-monospace, 'JetBrains Mono', monospace;
-		font-size: 10px;
+		font-size: 11px;
 		font-weight: bold;
-		letter-spacing: 0.07em;
+		letter-spacing: 0.08em;
+	}
+
+	.item-dur {
+		font-size: 10px;
+		letter-spacing: 0.05em;
+		opacity: 0.85;
+	}
+
+	.item-desc {
+		font-size: 10px;
+		color: #52525b;
+		letter-spacing: 0.03em;
 	}
 
 	.item-levels {
 		display: flex;
-		gap: 4px;
+		gap: 5px;
 		align-items: center;
 	}
 
 	.level-pip {
-		width: 7px;
-		height: 7px;
+		width: 8px;
+		height: 8px;
 		border-radius: 50%;
-		border: 1px solid rgba(228, 228, 231, 0.28);
+		border: 1px solid rgba(228, 228, 231, 0.2);
 		background: transparent;
-		transition:
-			background 0.2s,
-			border-color 0.2s;
+		transition: background 0.2s, border-color 0.2s;
 	}
 
-	.level-pip.filled {
-		background: #22d3ee;
-		border-color: #22d3ee;
-	}
-
+	/* Buy buttons */
 	.buy-btn {
-		width: 100%;
-		padding: 7px 4px;
+		padding: 8px 16px;
 		font-family: ui-monospace, 'JetBrains Mono', monospace;
 		font-size: 11px;
-		border-radius: 6px;
+		letter-spacing: 0.05em;
+		border-radius: 7px;
 		border: 1px solid rgba(228, 228, 231, 0.1);
 		background: rgba(228, 228, 231, 0.04);
-		color: #52525b;
+		color: #3f3f46;
 		cursor: not-allowed;
+		white-space: nowrap;
+		transition: background 0.15s, border-color 0.15s;
 	}
 
 	.buy-btn.affordable {
-		border-color: rgba(251, 191, 36, 0.5);
+		border-color: rgba(251, 191, 36, 0.45);
 		color: #fbbf24;
 		background: rgba(251, 191, 36, 0.07);
 		cursor: pointer;
 	}
 
 	.buy-btn.affordable:hover {
-		background: rgba(251, 191, 36, 0.17);
+		background: rgba(251, 191, 36, 0.16);
+	}
+
+	.buy-btn.bought {
+		border-color: rgba(96, 165, 250, 0.35);
+		color: #60a5fa;
+		background: rgba(96, 165, 250, 0.08);
+		cursor: default;
+	}
+
+	.upgrade-card .buy-btn {
+		width: 100%;
+		text-align: center;
 	}
 
 	.continue-btn {
 		display: block;
 		width: 100%;
+		margin-top: 6px;
 		padding: 14px;
 		font-family: ui-monospace, 'JetBrains Mono', monospace;
-		font-size: 15px;
-		letter-spacing: 0.06em;
-		border: 1px solid rgba(34, 211, 238, 0.35);
-		border-radius: 8px;
-		background: rgba(34, 211, 238, 0.07);
+		font-size: 14px;
+		letter-spacing: 0.1em;
+		border: 1px solid rgba(34, 211, 238, 0.3);
+		border-radius: 10px;
+		background: rgba(34, 211, 238, 0.06);
 		color: #22d3ee;
 		cursor: pointer;
-		transition: background 0.15s;
+		text-shadow: 0 0 12px rgba(34, 211, 238, 0.4);
+		transition: background 0.15s, box-shadow 0.15s;
 	}
 
 	.continue-btn:hover {
-		background: rgba(34, 211, 238, 0.18);
+		background: rgba(34, 211, 238, 0.14);
+		box-shadow: 0 0 24px rgba(34, 211, 238, 0.15);
 	}
 </style>

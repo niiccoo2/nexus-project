@@ -28,12 +28,11 @@ const POWERUP_WEIGHTS = { rapid: 3, triple: 3, shield: 3, life: 1, bomb: 2 };
 const POWERUP_DROP_CHANCE = 0.14;
 const POWERUP_DURATION = 8000;
 
-const SHOP_ITEMS = {
-	size:     { costs: [30, 60, 100], label: 'BIGGER',    color: '#60a5fa' },
-	speed:    { costs: [25, 50, 80],  label: 'SPEED',     color: '#fbbf24' },
-	health:   { costs: [40, 80, 120], label: 'HEALTH',    color: '#f472b6' },
-	fireRate: { costs: [35, 70, 110], label: 'FIRE RATE', color: '#22d3ee' },
-	shield:   { costs: [50, 90, 140], label: 'SHIELD+',   color: '#4ade80' },
+const SHIP_SHOP = {
+	size: { cost: 18, label: 'BIGGER', color: '#60a5fa', desc: 'Larger hull for this wave' }
+};
+const UPGRADE_SHOP = {
+	freezeShot: { costs: [20, 40, 70], label: 'FREEZE SHOT', color: '#a78bfa', durations: [2000, 3000, 4000], desc: 'Time Stop duration' }
 };
 const COIN_REWARDS = { standard: 2, fast: 3, sniper: 4, tank: 6, boss: 25 };
 
@@ -521,7 +520,8 @@ class MainScene extends Phaser.Scene {
 		this.isBossWave = false;
 		this.coins = 0;
 		this.shopIsOpen = false;
-		this.upgrades = { size: 0, speed: 0, health: 0, fireRate: 0, shield: 0 };
+		this.upgrades = { freezeShot: 0 };
+		this.shipSizeBought = false;
 
 		// Dash
 		this.isDashing = false;
@@ -532,7 +532,7 @@ class MainScene extends Phaser.Scene {
 		// Time stop
 		this.timeStopped = false;
 		this.timeStopCooldown = 0;
-		this.TIME_STOP_DURATION = 3000;
+		this.TIME_STOP_DURATION = 1500;
 		this.TIME_STOP_COOLDOWN = 8000;
 
 		// Power-ups
@@ -943,7 +943,7 @@ class MainScene extends Phaser.Scene {
 		// Subtle recoil pushback for game feel
 		this.player.x = Math.max(40, this.player.x - 2);
 		playSweep(this, 1100, 1700, 0.05, 'square', 0.025);
-		const delay = time < this.rapidUntil ? 100 : Math.max(140, 280 - this.upgrades.fireRate * 40);
+		const delay = time < this.rapidUntil ? 100 : 280;
 		this.lastFired = time + delay;
 	}
 
@@ -1745,6 +1745,12 @@ class MainScene extends Phaser.Scene {
 
 	openShopBetweenWaves() {
 		if (this.isGameOver) return;
+		// Reset per-wave ship size when shop opens (after the wave that used it)
+		if (this.shipSizeBought) {
+			this.shipSizeBought = false;
+			this.player.setDisplaySize(72, 42);
+			this.shieldOrb.setRadius(44);
+		}
 		this.shopIsOpen = true;
 		this.game.controls.shopCallback = {
 			buy: (type) => this.buyUpgrade(type),
@@ -1753,7 +1759,9 @@ class MainScene extends Phaser.Scene {
 		this.game.events.emit('shop:open', {
 			coins: this.coins,
 			upgrades: { ...this.upgrades },
-			items: SHOP_ITEMS,
+			shipBought: this.shipSizeBought,
+			shipShop: SHIP_SHOP,
+			upgradeShop: UPGRADE_SHOP,
 		});
 	}
 
@@ -1766,39 +1774,45 @@ class MainScene extends Phaser.Scene {
 	}
 
 	buyUpgrade(type) {
-		const item = SHOP_ITEMS[type];
-		if (!item) return;
-		const level = this.upgrades[type];
-		if (level >= item.costs.length) return;
-		const cost = item.costs[level];
-		if (this.coins < cost) return;
-		this.coins -= cost;
-		this.upgrades[type] += 1;
-		this.coinText.setText('◈  ' + this.coins);
-		this.applyUpgrade(type);
+		if (type === 'size') {
+			if (this.shipSizeBought) return;
+			const cost = SHIP_SHOP.size.cost;
+			if (this.coins < cost) return;
+			this.coins -= cost;
+			this.shipSizeBought = true;
+			this.coinText.setText('◈  ' + this.coins);
+			this.applyUpgrade('size');
+		} else {
+			const item = UPGRADE_SHOP[type];
+			if (!item) return;
+			const level = this.upgrades[type] ?? 0;
+			if (level >= item.costs.length) return;
+			const cost = item.costs[level];
+			if (this.coins < cost) return;
+			this.coins -= cost;
+			this.upgrades[type] = level + 1;
+			this.coinText.setText('◈  ' + this.coins);
+			this.applyUpgrade(type);
+		}
 		this.game.events.emit('shop:update', {
 			coins: this.coins,
 			upgrades: { ...this.upgrades },
+			shipBought: this.shipSizeBought,
 		});
 	}
 
 	applyUpgrade(type) {
-		const level = this.upgrades[type];
 		switch (type) {
 			case 'size': {
-				const w = 72 + level * 12;
-				const h = 42 + level * 7;
-				this.player.setDisplaySize(w, h);
-				this.shieldOrb.setRadius(44 + level * 8);
+				this.player.setDisplaySize(96, 56);
+				this.shieldOrb.setRadius(52);
 				break;
 			}
-			case 'health': {
-				this.maxLives = Math.min(this.maxLives + 1, 8);
-				this.lives = Math.min(this.lives + 1, this.maxLives);
-				this.renderLives();
+			case 'freezeShot': {
+				const level = this.upgrades.freezeShot;
+				this.TIME_STOP_DURATION = UPGRADE_SHOP.freezeShot.durations[level - 1] ?? 1500;
 				break;
 			}
-			default: break; // speed / fireRate / shield read dynamically in update/fireBullet
 		}
 	}
 
@@ -1892,10 +1906,10 @@ class MainScene extends Phaser.Scene {
 			if (ctrl?.targetY != null) {
 				const targetY = Phaser.Math.Clamp(ctrl.targetY, 0.04, 0.96) * height;
 				const dy = targetY - this.player.y;
-				const vy = Phaser.Math.Clamp(dy * 11, -(520 + this.upgrades.speed * 50), 520 + this.upgrades.speed * 50);
+				const vy = Phaser.Math.Clamp(dy * 11, -520, 520);
 				this.player.setVelocityY(vy);
 			} else {
-				const speed = 360 + this.upgrades.speed * 60;
+				const speed = 360;
 				if (this.cursors.up.isDown) this.player.setVelocityY(-speed);
 				else if (this.cursors.down.isDown) this.player.setVelocityY(speed);
 				else this.player.setVelocityY(0);
